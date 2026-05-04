@@ -339,12 +339,15 @@ def sanitize_text(text: str) -> str:
     return text.replace('\x00', '').strip()
 
 
+
 def extract_name(text: str) -> Optional[str]:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = [l for l in lines if not re.match(r'^([A-Za-z] ){3,}[A-Za-z]$', l)]
+
     if lines and len(lines[0].split()) > 6:
         first_chunk = re.split(r'\s{2,}|\|', lines[0])[0].strip()
         lines = [first_chunk] + lines[1:]
+
     blacklist = {
         'resume', 'cv', 'curriculum', 'developer', 'engineer', 
         'consultant', 'manager',
@@ -352,6 +355,8 @@ def extract_name(text: str) -> Optional[str]:
         'ba', 'ma', 'bcom', 'mcom', 'phd', 'bca', 'pgdm',
         'hsc', 'ssc', 'diploma', 'intermediate',
         'haldwani', 'dehradun', 'delhi', 'mumbai', 'bangalore',
+        'technologies', 'solutions', 'services', 'systems',
+        'limited', 'pvt', 'ltd', 'inc', 'corp', 'global',
     }
 
     def is_valid_name_line(line: str) -> bool:
@@ -360,17 +365,27 @@ def extract_name(text: str) -> Optional[str]:
             return False
         if not all(w[0].isupper() for w in words if w.isalpha()):
             return False
-        if any(w.lower() in blacklist for w in words):  
+        if any(w.lower() in blacklist for w in words):
             return False
         if any(char.isdigit() for char in line):
             return False
-        if ',' in line:           
+        if ',' in line:
             return False
-        if line.startswith(('●', '•', '-', '*', '/')):  
+        if line.startswith(('●', '•', '-', '*', '/')):
             return False
         if re.search(r'[@|+]', line):
             return False
         return True
+
+    def prepare(line: str) -> str:
+        if line.isupper():
+            line = line.title()
+        m = re.split(
+            r'\s+(?=(?:Developer|Engineer|Manager|Analyst|Designer|'
+            r'Consultant|Intern|Architect|Lead|Director|Officer|Executive)\b)',
+            line, maxsplit=1, flags=re.IGNORECASE
+        )
+        return m[0].strip() if len(m) > 1 else line
 
     for line in lines:
         match = re.search(r"(?i)^name\s*[:\-]\s*([A-Za-z\s.]+)$", line)
@@ -380,10 +395,14 @@ def extract_name(text: str) -> Optional[str]:
                 return candidate
 
     for line in lines[:8]:
-        if is_valid_name_line(line):
-            return line
+        candidate = prepare(line)
+        if is_valid_name_line(candidate):
+            return candidate
 
-    doc = nlp(text[:800])
+    snippet = text[:800]
+    if snippet.split('\n')[0].isupper():
+        snippet = snippet.title()
+    doc = nlp(snippet)
     for ent in doc.ents:
         if ent.label_ == "PERSON":
             name = ent.text.strip()
@@ -594,8 +613,8 @@ Resume Text:
     for attempt in range(max_retries):
         try:
             response = await groq_client.chat.completions.create(
-                #model="llama-3.3-70b-versatile",
-                model="llama-3.1-8b-instant",
+                model="llama-3.3-70b-versatile",
+                #model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 timeout=30

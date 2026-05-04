@@ -278,7 +278,7 @@ async def process_attachments_for_email(email_record, attachments: list, provide
                 parse_with_llm(text),
             )
 
-            name  = parsed.get("name")  or llm_data.get("name")
+            name = (llm_data.get("name") or "").strip() or parsed.get("name") or None
             email = parsed.get("email") or llm_data.get("email")
             phone = parsed.get("phone") or llm_data.get("phone")
 
