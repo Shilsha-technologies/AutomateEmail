@@ -739,8 +739,8 @@ Resume Text:
     for attempt in range(max_retries):
         try:
             response = await groq_client.chat.completions.create(
-                #model="llama-3.3-70b-versatile",
-                model="llama-3.1-8b-instant",
+                model="llama-3.3-70b-versatile",
+                #model="llama-3.1-8b-instant",
                 # model="gemma2-9b-it",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
