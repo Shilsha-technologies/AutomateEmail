@@ -9,7 +9,8 @@ from zoneinfo import ZoneInfo
 import asyncio
 
 from langchain_core.output_parsers import JsonOutputParser
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_groq import ChatGroq
 
 from resume_analyzer.schemas import ResumeAnalysisResult
@@ -52,10 +53,18 @@ def _get_llm() -> ChatGroq:
     )
 
 
-_PROMPT_TEMPLATE = """\
-You are a senior technical recruiter with 15 years of experience.
-Analyze the resume data below and return ONLY a valid JSON object — no markdown, no preamble, no explanation.
 
+_SYSTEM_PROMPT = """\
+You are a senior technical recruiter with 15 years of experience evaluating software engineering resumes.
+
+Your ONLY job is to return a valid JSON object — no markdown, no code fences, no explanation, no preamble.
+Any response that is not pure JSON will be rejected.
+
+You must think carefully before assigning each field. Never default, guess, or use placeholder values.
+Every field must be derived from the actual resume content provided.
+"""
+
+_HUMAN_PROMPT = """\
 ════════════════════════════════════
 CANDIDATE DATA
 ════════════════════════════════════
@@ -73,95 +82,215 @@ Resume Text (first 2500 chars):
 {raw_text_snippet}
 
 ════════════════════════════════════
-INSTRUCTIONS
+FIELD-BY-FIELD INSTRUCTIONS
 ════════════════════════════════════
 
-1. DOMAIN
-   - Carefully read the candidate's PRIMARY tech stack, job title, and most recent role.
-   - Infer the most precise and accurate job domain from the resume itself.
-   - Write the domain as a clean professional title, e.g.:
-       "React Developer", "Node.js Developer", "Python Developer",
-       "Data Scientist", "DevOps Engineer", "UI/UX Designer", etc.
-   - The following are EXAMPLES for reference — you are NOT limited to this list.
-     If the candidate has a niche role (e.g. "Blockchain Developer", "Embedded Systems Engineer",
-     "Site Reliability Engineer"), use that exact title:
-{example_domains}
-   - Rules:
-       ── FRONTEND ───────────────────────────────────────────────────────
-       • Primarily React / Redux / Next.js / React Native (web)     → React Developer
-       • Primarily Angular / RxJS / NgRx / Angular Material         → Angular Developer
-       • Primarily Vue.js / Vuex / Nuxt.js                          → Vue.js Developer
-       • Primarily HTML / CSS / SASS / jQuery / Bootstrap (no FW)   → Frontend Developer
-       • Primarily React Native / Expo (mobile focus)                → React Native Developer
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIELD 1 — name
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Extract the candidate's REAL full name from the resume text.
 
-       ── BACKEND ────────────────────────────────────────────────────────
-       • Primarily Node.js / Express / NestJS (backend focus)        → Node.js Developer
-       • Primarily Python / Django / Flask / FastAPI                 → Python Developer
-       • Primarily Java / Spring / SpringBoot / Hibernate             → Java Developer
-       • Primarily C# / .NET / ASP.NET / Entity Framework           → .NET Developer
-       • Primarily Go / Golang                                       → Golang Developer
+STRICT RULES:
+  • The "Name" field above is parsed from the PDF header — it is OFTEN WRONG.
+    It may contain section headings like "Professional Experience", "Professional Summary",
+    "Profile", "About Me", "Objective", etc. — these are NOT names.
+  • Read the raw resume text carefully. The real name is almost always:
+      – The very first line of the resume, OR
+      – A large-font heading at the top, OR
+      – Present in the email address (e.g., john.doe@gmail.com → John Doe)
+  • A valid name:
+      ✓ Contains 2 words (first + last), occasionally 3
+      ✓ Each word starts with a capital letter
+      ✓ No digits, no special characters
+      ✓ Is NOT a section heading or job title
+  • If the name truly cannot be determined from any source, return "Unknown Candidate".
+  • NEVER return section headings as the name.
 
-       ── FULL STACK ──────────────────────────────────────────────────────
-       • Equal React + Node, or MERN / MEAN / MEVN stack title      → Full Stack Developer
-       • SDE Intern with MERN / MEAN / full-stack project            → Full Stack Developer
-       • Next.js + Node.js / Prisma with equal frontend+backend     → Full Stack Developer
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIELD 2 — domain
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Infer the candidate's PRIMARY technical domain from their ENTIRE resume — 
+job titles, skills, projects, and profile summary all together.
 
-       ── MOBILE ─────────────────────────────────────────────────────────
-       • Primarily Flutter / Dart                                    → Flutter Developer
-       • Primarily Swift / SwiftUI / Xcode / iOS SDK                 → iOS Developer
-       • Primarily Kotlin / Jetpack Compose / Android SDK            → Android Developer
+DETECTION RULES (apply in order, first match wins):
 
-       ── DATA & AI ───────────────────────────────────────────────────────
-       • Primarily ML / TensorFlow / PyTorch / Scikit-learn / NLP   → Machine Learning Engineer
-       • Primarily LLMs / LangChain / RAG / Prompt Engineering      → AI/ML Engineer
-       • Primarily Tableau / Power BI / Looker / data analysis      → Data Analyst
-       • Primarily Spark / Hadoop / Airflow / ETL pipelines          → Data Engineer
-       • Primarily statistics / R / Python (analysis + modeling)    → Data Scientist
+  ── FRONTEND ──────────────────────────────────────────────────────────
+  • Primarily React / Redux / Next.js / React Native (web)     → React Developer
+  • Primarily Angular / RxJS / NgRx / Angular Material         → Angular Developer
+  • Primarily Vue.js / Vuex / Nuxt.js                          → Vue.js Developer
+  • Primarily HTML / CSS / SASS / jQuery / Bootstrap (no FW)   → Frontend Developer
+  • Primarily React Native / Expo (mobile focus)               → React Native Developer
 
-       ── DEVOPS & CLOUD ──────────────────────────────────────────────────
-       • Primarily Docker / Kubernetes / Terraform / CI-CD          → DevOps Engineer
-       • Primarily AWS / GCP / Azure architecture and services      → Cloud Engineer
+  ── BACKEND ───────────────────────────────────────────────────────────
+  • Primarily Node.js / Express / NestJS (backend focus)       → Node.js Developer
+  • Primarily Python / Django / Flask / FastAPI                → Python Developer
+  • Primarily Java / Spring / SpringBoot / Hibernate           → Java Developer
+  • Primarily C# / .NET / ASP.NET / Entity Framework          → .NET Developer
+  • Primarily Go / Golang                                      → Golang Developer
+  • Primarily Ruby on Rails                                    → Ruby on Rails Developer
+  • Primarily PHP / Laravel / Symfony                         → PHP Developer
 
-       ── FALLBACK ────────────────────────────────────────────────────────
-       • Resume is completely unclear or unrelated to above          → General
+  ── FULL STACK ────────────────────────────────────────────────────────
+  • Equal React + Node, MERN / MEAN / MEVN stack              → Full Stack Developer
+  • Next.js + Node.js / Prisma with equal frontend+backend    → Full Stack Developer
+  • SDE Intern with MERN / MEAN / full-stack projects          → Full Stack Developer
 
-   - Hard Rules:
-       • Do NOT assign a domain based on one minor library mention.
-       • Always prefer the most specific domain over a generic one.
-       • Never use "General" if any tech pattern is detectable.
+  ── MOBILE ────────────────────────────────────────────────────────────
+  • Primarily Flutter / Dart                                   → Flutter Developer
+  • Primarily Swift / SwiftUI / Xcode / iOS SDK               → iOS Developer
+  • Primarily Kotlin / Jetpack Compose / Android SDK           → Android Developer
 
-2. SKILLS
-   - List the top 10-20 skills extracted directly from the resume.
-   - Use exact short names: "React.js", "Node.js", "Redux", "NestJS", "AWS", "PostgreSQL".
+  ── DATA & AI ─────────────────────────────────────────────────────────
+  • Primarily ML / TensorFlow / PyTorch / Scikit-learn / NLP  → Machine Learning Engineer
+  • Primarily LLMs / LangChain / RAG / Prompt Engineering     → AI/ML Engineer
+  • Primarily Tableau / Power BI / Looker / data analysis     → Data Analyst
+  • Primarily Spark / Hadoop / Airflow / ETL pipelines         → Data Engineer
+  • Primarily statistics / R / Python (analysis + modeling)   → Data Scientist
 
-3. LEVEL  (based ONLY on experience_years above)
-   Fresher   = 0 – 1 year   (includes internships < 1 year)
-   Mid-Level = 2 – 4 years
-   Senior    = 5+ years
+  ── DEVOPS & CLOUD ────────────────────────────────────────────────────
+  • Primarily Docker / Kubernetes / Terraform / CI-CD         → DevOps Engineer
+  • Primarily AWS / GCP / Azure architecture and services     → Cloud Engineer
+  • Primarily security / penetration testing / compliance     → Security Engineer
 
-4. SCORE  (integer 0–100, never blindly return 50)
-   Skills match for detected domain  : 30 pts max
-   Work experience quality           : 30 pts max
-   Education background              : 20 pts max
-   Projects + certifications         : 20 pts max
+  ── DESIGN ────────────────────────────────────────────────────────────
+  • Primarily Figma / Adobe XD / Sketch / UI/UX               → UI/UX Designer
 
-5. SUMMARY — one concise professional sentence, 15–25 words.
-   Format : "<Role> with <exp> of experience in <top 2–3 skills>."
-   Examples:
-     "React developer with 3 years of experience in Redux, Next.js, and RESTful APIs."
-     "Full Stack developer with 6 months of experience in React, Node.js, and MongoDB."
-   Use the EXACT experience label provided: {exp_label}
-   Use the candidate's ACTUAL role and skills — never use placeholder text.
+  ── FALLBACK ──────────────────────────────────────────────────────────
+  • No detectable tech pattern                                → General
 
-6. FILENAME : Use EXACTLY this value: {exp_label}
-   Format: FirstName_LastName_DomainSlug_{exp_label}.pdf
-   Example with years : Ariba_Nusra_React_Developer_3Yrs.pdf
-   Example with months: Sakshi_Semwal_Full_Stack_Developer_3Months.pdf
-   Rules: underscores only, no spaces.
+HARD RULES:
+  • Analyze the FULL resume text, not just the skills list.
+  • Do NOT assign a domain based on one minor library mention.
+  • A candidate listing Python + ML/TensorFlow/PyTorch is NOT a "Python Developer" — they are a "Machine Learning Engineer".
+  • A candidate listing Angular as a primary skill is NOT a "React Developer".
+  • Always prefer the most specific and accurate domain.
+  • Never return "General" if any tech pattern is detectable.
 
-7. FOLDER   : Candidates/DomainSlug/
-   Example   : Candidates/React_Developer/
-   Must match the domain from step 1, slugified with underscores.
+Examples of WRONG vs CORRECT domain assignment:
+  ✗ WRONG : Skills=[Angular, Python, ML, SQL]         → React Developer
+  ✓ RIGHT : Skills=[Angular, Python, ML, SQL]         → Machine Learning Engineer (ML is primary stack)
+
+  ✗ WRONG : Skills=[React, Node.js, Express, MongoDB] → React Developer
+  ✓ RIGHT : Skills=[React, Node.js, Express, MongoDB] → Full Stack Developer (equal frontend+backend)
+
+  ✗ WRONG : Skills=[Python, Django, FastAPI, NumPy]   → Data Scientist
+  ✓ RIGHT : Skills=[Python, Django, FastAPI, NumPy]   → Python Developer (backend focus)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIELD 3 — skills
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+List the top 10–20 technical skills extracted from the resume.
+
+RULES:
+  • Use exact short professional names: "React.js", "Node.js", "Redux", "NestJS", "AWS", "PostgreSQL"
+  • PRIORITIZE domain-relevant skills first, then supporting skills
+  • Exclude soft skills ("Communication", "Teamwork", "Leadership") UNLESS the resume is non-technical
+  • Exclude vague items like "Problem Solving", "SDLC", "Agile" unless specifically technical
+  • Return as a JSON array of strings
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIELD 4 — level
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Determine seniority level based ONLY on the experience_years value above:
+
+  Fresher   = 0–1 year    (includes internships < 1 year, 0 months)
+  Mid-Level = 2–4 years
+  Senior    = 5+ years
+
+Return exactly one of: "Fresher", "Mid-Level", "Senior"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIELD 5 — score  ← CALCULATE THIS CAREFULLY, NEVER DEFAULT TO 50
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Score the candidate from 0–100 using this rubric. Think step by step.
+
+  ┌─────────────────────────────────────────────────┬──────────┐
+  │ CATEGORY                                        │ MAX PTS  │
+  ├─────────────────────────────────────────────────┼──────────┤
+  │ A. Skills relevance to detected domain          │   30 pts │
+  │ B. Work experience quality & depth              │   30 pts │
+  │ C. Education background                         │   20 pts │
+  │ D. Projects + Certifications                    │   20 pts │
+  └─────────────────────────────────────────────────┴──────────┘
+
+  CATEGORY A — Skills (0–30):
+    25–30 : 8+ highly relevant domain skills, advanced stack
+    18–24 : 5–7 relevant domain skills, solid coverage
+    10–17 : 3–4 relevant skills, some gaps
+     0–9  : Mostly irrelevant or fewer than 3 domain skills
+
+  CATEGORY B — Work Experience (0–30):
+    25–30 : 5+ years at reputable companies, senior roles
+    18–24 : 2–4 years, relevant job titles, good progression
+    10–17 : <2 years, internships only, or unrelated roles
+     0–9  : No work experience or completely unrelated
+
+  CATEGORY C — Education (0–20):
+    17–20 : Tier-1 university (IIT, NIT, BITS, top global), CS/Engineering degree
+    12–16 : Good university, relevant degree (CS, IT, ECE, MCA)
+     6–11 : Average college, semi-relevant degree
+     0–5  : Unknown institution, unrelated degree, or no education listed
+
+  CATEGORY D — Projects + Certifications (0–20):
+    17–20 : 4+ strong domain-relevant projects AND 2+ certifications
+    12–16 : 2–3 solid projects OR strong certifications
+     6–11 : 1 project OR 1 certification
+     0–5  : No projects and no certifications
+
+  EXAMPLES of expected scores:
+    • 6-yr Senior Node.js dev, IIT grad, 5 projects, 3 certs    → 88–95
+    • 3-yr Mid React dev, good university, 3 projects, 1 cert   → 65–75
+    • 10-month Fresher, relevant skills, 2 projects, no cert    → 45–58
+    • 0-month Fresher, weak skills, 1 project, no cert          → 25–38
+
+  NEVER return 50 as a default. Always compute the actual score.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIELD 6 — summary
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Write exactly ONE professional sentence, 15–25 words.
+
+Format: "<Role> with <exp_label> of experience in <top 2–3 DOMAIN-RELEVANT skills>."
+
+RULES:
+  • Use EXACTLY this experience label (do not paraphrase): {exp_label}
+  • Skills in the summary MUST be the most relevant to the domain, NOT just the first 3 from the skills list
+  • Role must match the domain exactly
+  • Never use placeholder text
+
+CORRECT examples:
+  "React Developer with 3 years of experience in React.js, Redux, and Next.js."
+  "Machine Learning Engineer with 6 months of experience in TensorFlow, PyTorch, and Scikit-learn."
+  "Full Stack Developer with 2 years of experience in React.js, Node.js, and MongoDB."
+
+WRONG examples (do not do this):
+  ✗ "React Developer with 3 years of experience in JWT, Postman, MySQL."   ← irrelevant skills
+  ✗ "Python Developer with 0 months of experience in Django, MySQL, Deep Learning."  ← mixed domain skills
+  ✗ "React Developer with 10 months of experience in Prisma, DSA, Python." ← non-React skills listed first
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIELD 7 — filename
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Use EXACTLY this format: FirstName_LastName_DomainSlug_{exp_label}.pdf
+
+  • Use the CORRECTED name from Field 1 (not the raw input name)
+  • DomainSlug = domain with spaces replaced by underscores (e.g., React_Developer, Node_js_Developer)
+  • exp_label = EXACTLY: {exp_label}
+  • Underscores only, no spaces, no hyphens
+
+Examples:
+  Ariba_Nusra_React_Developer_3Yrs.pdf
+  Sakshi_Semwal_Machine_Learning_Engineer_2Months.pdf
+  Ankit_Gaur_Node_js_Developer_6Yrs.pdf
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIELD 8 — folder
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Format: Candidates/DomainSlug/
+  • DomainSlug MUST exactly match the slug used in the filename
+  • Example: Candidates/React_Developer/ or Candidates/Machine_Learning_Engineer/
+
+════════════════════════════════════
 
 {format_instructions}
 """
@@ -182,18 +311,14 @@ def _format_exp_text(exp_years: float) -> str:
     return f"{yrs} year{'s' if yrs != 1 else ''}"
 
 
+
 def _build_chain():
     parser = JsonOutputParser(pydantic_object=ResumeAnalysisResult)
-    prompt = PromptTemplate(
-        template=_PROMPT_TEMPLATE,
-        input_variables=[
-            "name", "email", "profile_summary", "skills",
-            "experience_years", "exp_label", "experience_entries",
-            "education_count", "projects_count", "certifications_count",
-            "raw_text_snippet", "example_domains",
-        ],
-        partial_variables={"format_instructions": parser.get_format_instructions()},
-    )
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", _SYSTEM_PROMPT),
+        ("human", _HUMAN_PROMPT),
+    ])
+    prompt = prompt.partial(format_instructions=parser.get_format_instructions())
     return prompt | _get_llm() | parser
 
 

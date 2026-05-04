@@ -477,7 +477,6 @@ def normalize_date(date_str):
     date_str = date_str.strip().replace('.', '')
     if date_str.lower() in ("present", "current"):
         return None
-    # Expand 2-digit year → 4-digit (e.g. "April 24" → "April 2024", "Aug 22" → "Aug 2022")
     date_str = re.sub(
         r'(\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|'
         r'Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+)(\d{2})\b',
@@ -502,14 +501,15 @@ def extract_date_range(text):
 
 
 async def parse_with_llm(text: str) -> dict:
+    current_month_year = datetime.now().strftime("%B %Y")
     prompt = f"""
-You are an advanced ATS resume parser.
+You are an expert ATS resume parser with 15 years of experience.
+Return ONLY valid JSON — no markdown, no backticks, no explanation, no preamble.
+Any non-JSON output will be rejected.
 
-Extract structured data from the resume text below.
-
-Return ONLY valid JSON (no explanation, no markdown, no backticks).
-
-Schema:
+════════════════════════════════════
+SCHEMA
+════════════════════════════════════
 {{
   "name": "",
   "email": "",
@@ -518,6 +518,7 @@ Schema:
   "linkedin": "",
   "github": "",
   "portfolio": "",
+  "total_experience_months": 0,
   "skills": [],
   "experience": [
     {{
@@ -525,6 +526,7 @@ Schema:
       "company": "",
       "startDate": "",
       "endDate": "",
+      "duration_months": 0,
       "description": "",
       "projects": [
         {{
@@ -561,60 +563,185 @@ Schema:
   ]
 }}
 
-Rules:
-- For linkedin/github/portfolio: extract the URL even if it appears as plain text like "LinkedIn: linkedin.com/in/john" or "GitHub - github.com/john". Always return a full URL starting with https://.
-- For experience[].projects: if the candidate mentions working on specific named projects WITHIN a job entry, list them here. These will be merged into the global projects list.
-- For certifications: extract every certification, license, or course completion mentioned anywhere in the resume.
-- For gender: extract only if explicitly stated (Male/Female/Other). Return empty string if not found.
-- For dates: ALWAYS use full 4-digit year format "Month YYYY" (e.g. "August 2022", "April 2024"). 
-  If the resume shows a 2-digit year like "Aug 22", expand it to "Aug 2022". 
-  Use "Present" for current roles. Never return 2-digit years.
-WORK EXPERIENCE RULES (strictly follow these):
-- If the company line contains "As:" or "As:-" followed by a title 
-  (e.g. "Millenium Intech Pvt Ltd As: - React Developer"), 
-  split it: everything before "As:" is the company, everything after is the role.
-- "role" must be the JOB TITLE only (e.g. "React Developer", "Senior Software Development Engineer", "SDE Intern"). Never put company name, dates, bullets, or technology lists in role.
-- "company" must be the EMPLOYER NAME only (e.g. "Millenium Intech Pvt Ltd", "TCS", "Bluestock Fintech"). Never put role, dates, or descriptions in company.
-- If a person worked at ONE company but on MULTIPLE projects with different date ranges, create ONE experience entry for that company — use the earliest startDate and the latest endDate (or "Present"). Do NOT create a separate experience entry per project.
-- "startDate" and "endDate" must be dates only (e.g. "January 2022", "Present"). Never leave them empty if dates are visible in the resume.
-- "description" should be a brief 1-2 sentence summary of responsibilities. Do not put bullet lists here.
-- "projects" inside an experience entry: only fill this if the resume explicitly names a project within that job. Leave as [] otherwise.
-- If the resume has no explicit 'Work Experience' section header but has a 'Professional Summary' 
-  paragraph describing a role, extract the role and company from that summary as a work experience entry.
-  Look for patterns like "X years of experience as [role] at [company]" or 
-  "developer with experience in [company-type] building [tech]".
-STRICT EXPERIENCE RULES:
-- "role" = job title ONLY. Never include tech, dates, or bullets.
-- "company" = employer name ONLY. Stop at the first comma if what follows looks like tech.
-- Technologies at the end of an experience entry (e.g. "Technologies Used: ...") 
-  belong to that entry — they are NOT a new experience entry.
-- Do NOT create a new experience entry just because you see a "Technologies Used:" line.
-- If multiple projects are listed under ONE employer, create ONE experience entry only.
+════════════════════════════════════
+FIELD-BY-FIELD RULES
+════════════════════════════════════
 
-PROJECT RULES (strictly follow these):
-- Some resumes write projects like:
-    "Language: Java, Spring Boot, MySQL"  ← this is the tech stack, NOT the project name
-    "Description: ..."                    ← this has the real description
-    The project name in this case should be extracted from the Description text 
-    (e.g. "CABA" or "Swabi"), NOT from the Language line.
-- Never use a line starting with "Language:" as the project name.
-- Always extract technologies from the "Language:" line into the technologies array.
-- "name" must be the project title ONLY. If the resume writes "Formify – Full-Stack Form Builder Next.js, React, Prisma, Tailwind", the name is "Formify" or at most "Formify – Full-Stack Form Builder". Never include technology names in the project name.
-- "technologies" must be a list of tech strings extracted from the project line or its bullets (e.g. ["Next.js", "React", "Prisma", "Tailwind"]). Always populate this — never leave it as [].
-- "description" should be the project description text from the bullets below the project heading.
-- If the project heading line contains both a name and tech stack separated by "–", "-", "|", or just spaces after the title, split them: everything before the separator is the name, everything after goes into technologies.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NAME — Read this carefully
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The candidate's real name is almost always ONE of:
+  1. The very first non-blank line of the resume (if it looks like a person's name)
+  2. A large standalone heading at the top of the resume
+  3. Derivable from the email address (e.g. john.doe@gmail.com → "John Doe")
+
+A VALID name:
+  ✓ Contains 2–3 words, each starting with a capital letter
+  ✓ No digits, symbols, or punctuation
+  ✓ Is NOT a section heading
+
+INVALID names — these are section headings, never a person's name:
+  ✗ "Professional Experience"
+  ✗ "Professional Summary"
+  ✗ "Work Experience"
+  ✗ "Profile"
+  ✗ "About Me"
+  ✗ "Career Objective"
+  ✗ "Curriculum Vitae"
+  ✗ "Resume"
+  ✗ Any single word
+  ✗ Any line containing "years of experience", "developer", "engineer", "analyst"
+
+FALLBACK PRIORITY (use in order):
+  1. First line of resume → is it a valid name? Use it.
+  2. Search resume text for a line that is ONLY a proper name (2–3 capitalized words, nothing else on that line)
+  3. Parse the email address: john.doe@gmail.com → "John Doe", jsmith@gmail.com → use as-is
+  4. Still not found → return "Unknown Candidate"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EMAIL, PHONE, GENDER, LINKEDIN, GITHUB, PORTFOLIO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- email   : Extract as-is. Return "" if not found.
+- phone   : Extract digits + country code. Return "" if not found.
+- gender  : Only if EXPLICITLY stated ("Male"/"Female"/"Other"). Return "" otherwise. Never infer from name.
+- linkedin: Return full URL starting with https://. If resume shows "linkedin.com/in/john", return "https://linkedin.com/in/john".
+- github  : Same rule as linkedin. If resume shows "GitHub - github.com/john", return "https://github.com/john".
+- portfolio: Same URL rule. Return "" if not found.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DATES — All experience date formatting
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ALWAYS expand dates to full "Month YYYY" format:
+  "Aug 22"       → "August 2022"
+  "Jan 24"       → "January 2024"
+  "09/2023"      → "September 2023"
+  "2022"         → "January 2022" (year only — use January as default month)
+  "Present" / "Current" / "Till Date" / "Ongoing" → "Present"
+  Missing date   → "" (empty string, never null)
+
+Never return 2-digit years. Never return null for dates.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WORK EXPERIENCE — Extraction rules
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ROLE EXTRACTION:
+  - "role" = JOB TITLE ONLY. Examples: "React Developer", "SDE Intern", "Senior Backend Engineer"
+  - Never include company name, dates, bullet points, or technologies in role
+  - Common role patterns to detect:
+      • "Company As: Role"           → company="Company", role="Role"
+      • "Company As:- Role"          → company="Company", role="Role"
+      • "Company | Role"             → company="Company", role="Role"
+      • "Company – Role"             → company="Company", role="Role"
+      • "Role at Company"            → role="Role", company="Company"
+      • "Role, Company"              → role="Role", company="Company"
+
+COMPANY EXTRACTION:
+  - "company" = EMPLOYER NAME ONLY. Examples: "Infosys", "TCS", "Bluestock Fintech"
+  - Stop at the first separator: "As:", "As:-", "|", "–", ","
+  - Never include role, dates, or tech in company
+
+MULTI-PROJECT SINGLE EMPLOYER:
+  - If a person worked at ONE company with MULTIPLE projects under different dates:
+    → Create ONE experience entry with earliest startDate and latest endDate (or "Present")
+    → List all projects inside experience[].projects
+    → Do NOT create a separate experience entry per project
+
+TECHNOLOGIES USED LINE:
+  - A line like "Technologies Used: React, Node.js, MongoDB" belongs to the CURRENT experience entry
+  - It is NOT a new experience entry
+  - Never create a new experience entry for a "Technologies Used:" line
+
+NO EXPLICIT WORK SECTION:
+  - If the resume has no "Work Experience" heading but has a Professional Summary like
+    "3 years of experience as React Developer at XYZ Corp" — extract that as one experience entry
+
+DEDUPLICATION:
+  - If the same company + role appears more than once with identical or overlapping dates, keep only ONE entry
+  - Merge descriptions if needed
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DURATION & TOTAL EXPERIENCE — Calculate carefully
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+For EACH experience entry, compute "duration_months":
+  - Use startDate and endDate (treat "Present" as today: {current_month_year})
+  - Count full months between the two dates
+  - If dates are missing or unclear, estimate conservatively (default 0)
+  - Example: "January 2022" to "June 2024" = 29 months
+
+"total_experience_months":
+  - Sum of all non-overlapping experience duration_months
+  - If two jobs overlap in dates (e.g. freelance + full-time), count overlapping period only once
+  - Internships count toward total experience
+  - Final result = integer (total months)
+
+  Examples:
+    1 job: Jan 2022 – Jun 2024 (29 months)           → total_experience_months: 29
+    2 jobs (sequential): 12 months + 18 months        → total_experience_months: 30
+    0 experience / student resume                      → total_experience_months: 0
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROJECTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- "name" = project title ONLY.
+    ✓ "Formify"
+    ✓ "Formify – Full-Stack Form Builder"
+    ✗ "Formify – Full-Stack Form Builder Next.js React Prisma"  ← tech not in name
+
+- "technologies" = extract from:
+    • Inline after "–", "-", "|"
+    • "Language:", "Tech Stack:", "Technologies:", "Built with:" lines
+    • Bullet points mentioning specific libraries
+    Always populate this. Never leave as [].
+
+- "description" = the text description of what the project does (1–3 sentences).
+    Not the tech stack. Not the project name.
+
+- "Language: Java, Spring Boot" → this is the TECH STACK, NOT the project name.
+    Extract the actual project name from the description text on the line below.
+
+- Global projects[] should include:
+    • Standalone projects listed in a "Projects" section
+    • Projects from experience[].projects (merge both, deduplicate by name)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CERTIFICATIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Extract every certification, online course, or license mentioned anywhere in the resume
+- Include courses from Coursera, Udemy, NPTEL, LinkedIn Learning, AWS, Google, etc.
+- "year" = 4-digit year only (e.g. "2023"). Return "" if not found.
+- "url" = certification URL if present. Return "" if not found.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EDUCATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- "degree" = full degree name: "B.Tech in Computer Science", "MBA", "12th (PCM)", "10th"
+- "institution" = school/college/university name only
+- "year" = graduation year (4 digits) or expected year
+- "board" = board name if mentioned (CBSE, ICSE, etc.). Return "" otherwise.
+- "percentage" = percentage or CGPA if mentioned. Return "" otherwise.
+
+════════════════════════════════════
+FINAL REMINDERS
+════════════════════════════════════
+1. Return ONLY the JSON object. No text before or after.
+2. Never use null — use "" for missing strings, [] for missing arrays, 0 for missing numbers.
+3. Never fabricate data. If something is not in the resume, leave it empty.
+4. All URLs must start with https://.
+5. All years must be 4 digits.
+6. Deduplicate experience entries with same company+role.
+7. total_experience_months must be an integer ≥ 0.
 
 Resume Text:
 {text[:12000]}
 """
-
     max_retries = 3
     retry_delays = [60, 120, 180] 
     for attempt in range(max_retries):
         try:
             response = await groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                #model="llama-3.1-8b-instant",
+                #model="llama-3.3-70b-versatile",
+                model="llama-3.1-8b-instant",
+                # model="gemma2-9b-it",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 timeout=30
@@ -654,7 +781,6 @@ def extract_projects_from_experience(llm_experiences: list) -> list:
         for proj in inner_projects:
             if not isinstance(proj, dict) or not proj.get("name"):
                 continue
-            # Enrich description with context if description is empty
             desc = proj.get("description", "")
             if not desc and (company or role):
                 desc = f"Worked on this project at {company} as {role}.".strip(". ") + "."
