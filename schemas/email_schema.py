@@ -110,6 +110,7 @@ class OutreachSendResult(BaseModel):
     job_role: str
     status: str
     error: Optional[str] = None
+    outreach_log_id: Optional[int] = None
 
 class OutreachSendResponse(BaseModel):
     batch_id: str
@@ -120,3 +121,25 @@ class OutreachSendResponse(BaseModel):
     failed_count: int
     message: str
     results: List[OutreachSendResult] = Field(default_factory=list)
+
+
+class OutreachHistoryItem(BaseModel):
+    id: int
+    batch_id: str
+    hr_user_id: int
+    source_email_id: Optional[int] = None
+    provider: str
+    recipient_email: EmailStr
+    candidate_name: Optional[str] = None
+    job_role: Optional[str] = None
+    subject: Optional[str] = None
+    body: Optional[str] = None
+    status: str
+    error_message: Optional[str] = None
+    provider_message_id: Optional[str] = None
+    attempted_at: Optional[datetime] = None
+    sent_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True

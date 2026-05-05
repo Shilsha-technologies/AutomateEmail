@@ -5,8 +5,15 @@ from sqlalchemy.orm import Session
 
 from database.db import get_db
 from models.hr_user import HRUser
+from models.outreach_log import OutreachLog
 from routers.auth import resolve_employee_hr_user
-from schemas.email_schema import OutreachFilters, OutreachMode, OutreachSendRequest, OutreachSendResponse
+from schemas.email_schema import (
+    OutreachFilters,
+    OutreachHistoryItem,
+    OutreachMode,
+    OutreachSendRequest,
+    OutreachSendResponse,
+)
 from services.outreach_service import resolve_recipient_targets, deliver_outreach_message
 import services.gmail_service as gmail_svc
 import services.outlook_service as outlook_svc
@@ -53,6 +60,7 @@ def _run_outreach_send(
         delivery_summary = deliver_outreach_message(
             db=db,
             hr_user=current_user,
+            batch_id=batch_id,
             delivery_mode=payload.mode.value,
             subject=payload.subject,
             body=payload.body,
@@ -144,3 +152,51 @@ async def send_outreach(
     )
 
     return _run_outreach_send(payload, db, current_user, attachments=attachment_payloads)
+
+
+@router.get("/history", response_model=list[OutreachHistoryItem])
+def get_outreach_history(
+    hr_user_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_employee: dict = Depends(get_current_employee),
+):
+    current_user = resolve_employee_hr_user(
+        db=db,
+        current_employee=current_employee,
+        hr_user_id=hr_user_id,
+    )
+
+    logs = (
+        db.query(OutreachLog)
+        .filter(OutreachLog.hr_user_id == current_user.id)
+        .order_by(OutreachLog.created_at.desc(), OutreachLog.id.desc())
+        .all()
+    )
+
+    return logs
+
+
+@router.get("/history/{batch_id}", response_model=list[OutreachHistoryItem])
+def get_outreach_history_by_batch(
+    batch_id: str,
+    hr_user_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_employee: dict = Depends(get_current_employee),
+):
+    current_user = resolve_employee_hr_user(
+        db=db,
+        current_employee=current_employee,
+        hr_user_id=hr_user_id,
+    )
+
+    logs = (
+        db.query(OutreachLog)
+        .filter(
+            OutreachLog.hr_user_id == current_user.id,
+            OutreachLog.batch_id == batch_id,
+        )
+        .order_by(OutreachLog.id.asc())
+        .all()
+    )
+
+    return logs
