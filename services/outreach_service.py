@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr
 
 from sqlalchemy import func, or_
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from models.candidate import Candidate
 from models.email_model import Email
 from models.hr_user import HRUser
+from models.outreach_log import OutreachLog
 import services.gmail_service as gmail_svc
 import services.outlook_service as outlook_svc
 
@@ -229,6 +230,7 @@ def resolve_recipient_emails(
 def deliver_outreach_message(
     db: Session,
     hr_user: HRUser,
+    batch_id: str,
     delivery_mode: str,
     subject: str,
     body: str,
@@ -250,7 +252,7 @@ def deliver_outreach_message(
         rendered_body = _render_template(body, target)
 
         try:
-            sender_fn(
+            provider_response = sender_fn(
                 hr_user=hr_user,
                 db=db,
                 subject=rendered_subject,
@@ -260,6 +262,34 @@ def deliver_outreach_message(
                 is_html=is_html,
                 attachments=attachments,
             )
+
+            provider_message_id = None
+            if isinstance(provider_response, dict):
+                provider_message_id = (
+                    provider_response.get("id")
+                    or provider_response.get("message_id")
+                    or provider_response.get("provider_message_id")
+                )
+
+            log_row = OutreachLog(
+                batch_id=batch_id,
+                hr_user_id=hr_user.id,
+                source_email_id=target["email_id"],
+                provider=hr_user.provider,
+                recipient_email=target["recipient_email"],
+                candidate_name=target["candidate_name"],
+                job_role=target["job_role"],
+                subject=rendered_subject,
+                body=rendered_body,
+                status="sent",
+                error_message=None,
+                provider_message_id=provider_message_id,
+                sent_at=datetime.now(timezone.utc),
+            )
+            db.add(log_row)
+            db.commit()
+            db.refresh(log_row)
+
             sent_count += 1
             results.append(
                 {
@@ -269,9 +299,32 @@ def deliver_outreach_message(
                     "job_role": target["job_role"],
                     "status": "sent",
                     "error": None,
+                    "outreach_log_id": log_row.id,
                 }
             )
         except Exception as exc:
+            db.rollback()
+            error_text = getattr(exc, "user_message", str(exc))
+
+            log_row = OutreachLog(
+                batch_id=batch_id,
+                hr_user_id=hr_user.id,
+                source_email_id=target["email_id"],
+                provider=hr_user.provider,
+                recipient_email=target["recipient_email"],
+                candidate_name=target["candidate_name"],
+                job_role=target["job_role"],
+                subject=rendered_subject,
+                body=rendered_body,
+                status="failed",
+                error_message=error_text,
+                provider_message_id=None,
+                sent_at=None,
+            )
+            db.add(log_row)
+            db.commit()
+            db.refresh(log_row)
+
             failed_count += 1
             results.append(
                 {
@@ -280,7 +333,8 @@ def deliver_outreach_message(
                     "candidate_name": target["candidate_name"],
                     "job_role": target["job_role"],
                     "status": "failed",
-                    "error": getattr(exc, "user_message", str(exc)),
+                    "error": error_text,
+                    "outreach_log_id": log_row.id,
                 }
             )
 
