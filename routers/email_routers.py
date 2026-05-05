@@ -16,6 +16,7 @@ from models.attachment_activity import AttachmentActivity
 from models.attachment_model import Attachment
 from models.email_model import Email
 from models.hr_user import HRUser
+from models.outreach_log import OutreachLog
 from routers.auth import resolve_employee_hr_user
 from utils.security import get_current_employee
 import asyncio
@@ -143,6 +144,57 @@ def build_attachment_payload(
         "downloaded_at": downloaded_at,
         "download_count": download_count_map.get(attachment.id, 0),
     }
+
+
+def build_outreach_summary_map(
+    db: Session,
+    email_ids: list[int],
+    current_user_id: int,
+) -> dict[int, dict]:
+    if not email_ids:
+        return {}
+
+    logs = (
+        db.query(OutreachLog)
+        .filter(
+            OutreachLog.hr_user_id == current_user_id,
+            OutreachLog.source_email_id.in_(email_ids),
+        )
+        .order_by(
+            OutreachLog.source_email_id.asc(),
+            OutreachLog.created_at.desc(),
+            OutreachLog.id.desc(),
+        )
+        .all()
+    )
+
+    summary_map: dict[int, dict] = {}
+    for log in logs:
+        source_email_id = log.source_email_id
+        if source_email_id is None:
+            continue
+
+        summary = summary_map.get(source_email_id)
+        if summary is None:
+            summary = {
+                "outreach_status": "failed" if log.status == "failed" else "sent",
+                "outreach_count": 0,
+                "sent_outreach_count": 0,
+                "failed_outreach_count": 0,
+                "last_outreach_at": log.sent_at or log.attempted_at or log.created_at,
+                "last_outreach_batch_id": log.batch_id,
+                "last_outreach_log_id": log.id,
+            }
+            summary_map[source_email_id] = summary
+
+        summary["outreach_count"] += 1
+        if log.status == "sent":
+            summary["sent_outreach_count"] += 1
+            summary["outreach_status"] = "sent"
+        elif log.status == "failed":
+            summary["failed_outreach_count"] += 1
+
+    return summary_map
 
 
 def mark_attachment_viewed(db: Session, attachment_id: int, current_user_id: int) -> None:
@@ -468,11 +520,24 @@ def get_all_emails_with_details(
         attachment_ids,
         current_user.id,
     )
+    outreach_summary_map = build_outreach_summary_map(db, email_ids, current_user.id)
 
     result = []
     for email in emails:
         atts = attachments_by_email.get(email.id, [])
         formatted = format_email_datetime(email.received_at, email.date)
+        outreach_summary = outreach_summary_map.get(
+            email.id,
+            {
+                "outreach_status": "not_sent",
+                "outreach_count": 0,
+                "sent_outreach_count": 0,
+                "failed_outreach_count": 0,
+                "last_outreach_at": None,
+                "last_outreach_batch_id": None,
+                "last_outreach_log_id": None,
+            },
+        )
         result.append(
             {
                 "id":              email.id,
@@ -485,6 +550,7 @@ def get_all_emails_with_details(
                 "time":            formatted["time"],
                 "job_position":    email.job_position,
                 "has_attachments": email.has_attachments,
+                **outreach_summary,
                 "attachments": [
                     build_attachment_payload(
                         a,
