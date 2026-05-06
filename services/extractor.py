@@ -1,11 +1,12 @@
 import re
 from bs4 import BeautifulSoup
-from langchain_groq import ChatGroq
+# from langchain_groq import ChatGroq
+from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-
-_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0) 
+# _llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0) 
+_llm = ChatOllama(model="mistral", temperature=0)
 
 _POSITION_PROMPT = ChatPromptTemplate.from_messages([
     ("system",

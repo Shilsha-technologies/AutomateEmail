@@ -38,3 +38,4 @@ langchain-groq
 google-auth-httplib2
 aioboto3
 alembic
+

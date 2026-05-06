@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 from groq import Groq
 from fastapi import UploadFile
 from urllib.parse import urlparse
-from groq import AsyncGroq
+# from groq import AsyncGroq
+import ollama
 import asyncio
 from models.candidate import Candidate
 from resume_analyzer.integration import run_resume_analyzer
@@ -166,14 +167,21 @@ If no identifiable projects exist, return [].
 Resume:
 {resume_text[:4000]}
 """
-        groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
-        response = await groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+        # groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+        # response = await groq_client.chat.completions.create(
+        #     model="llama-3.3-70b-versatile",
+        #     messages=[{"role": "user", "content": prompt}],
+        #     temperature=0.2,
+        #     timeout=10
+        # )
+        # content = response.choices[0].message.content.strip()
+        response = await asyncio.to_thread(
+            ollama.chat,
+            model="mistral",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            timeout=10
+            options={"temperature": 0.2}
         )
-        content = response.choices[0].message.content.strip()
+        content = response["message"]["content"].strip()
         content = re.sub(r"```json|```", "", content).strip()
         
         projects = json.loads(content)

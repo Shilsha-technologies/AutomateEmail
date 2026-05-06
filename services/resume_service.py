@@ -7,7 +7,8 @@ import fitz
 import time
 import mimetypes
 #from groq import Groq
-from groq import AsyncGroq
+# from groq import AsyncGroq
+import ollama
 from botocore.exceptions import NoCredentialsError
 from typing import List, Optional
 from PyPDF2 import PdfReader, PdfWriter
@@ -26,9 +27,9 @@ import asyncio
 
 nlp = spacy.load("en_core_web_sm")
 
-groq_client = AsyncGroq(
-    api_key=os.getenv("GROQ_API_KEY")
-)
+# groq_client = AsyncGroq(
+#     api_key=os.getenv("GROQ_API_KEY")
+# )
 
 s3_client = boto3.client(
     "s3",
@@ -737,16 +738,31 @@ Resume Text:
     max_retries = 3
     retry_delays = [60, 120, 180] 
     for attempt in range(max_retries):
+        # try:
+        #     response = await groq_client.chat.completions.create(
+        #         model="llama-3.3-70b-versatile",
+        #         #model="llama-3.1-8b-instant",
+        #         # model="gemma2-9b-it",
+        #         messages=[{"role": "user", "content": prompt}],
+        #         temperature=0.2,
+        #         timeout=30
+        #     )
+        #     content = response.choices[0].message.content
+        #     try:
+        #         return json.loads(content)
+        #     except Exception:
+        #         json_match = re.search(r"\{.*\}", content, re.DOTALL)
+        #         if json_match:
+        #             return json.loads(json_match.group(0))
+        #     return {}
         try:
-            response = await groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                #model="llama-3.1-8b-instant",
-                # model="gemma2-9b-it",
+            response = await asyncio.to_thread(
+                ollama.chat,
+                model="mistral",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-                timeout=30
+                options={"temperature": 0.2}
             )
-            content = response.choices[0].message.content
+            content = response["message"]["content"]
             try:
                 return json.loads(content)
             except Exception:

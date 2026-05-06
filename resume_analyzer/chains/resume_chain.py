@@ -11,7 +11,8 @@ import asyncio
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_groq import ChatGroq
+# from langchain_groq import ChatGroq
+from langchain_ollama import ChatOllama
 
 from resume_analyzer.schemas import ResumeAnalysisResult
 
@@ -42,14 +43,22 @@ EXAMPLE_DOMAINS: list[str] = [
 ]
 
 
+# @lru_cache(maxsize=1)
+# def _get_llm() -> ChatGroq:
+#     return ChatGroq(
+#         model="llama-3.3-70b-versatile",
+#         api_key=os.getenv("GROQ_API_KEY"),
+#         temperature=0.1,
+#         max_tokens=900,
+#         max_retries=3,
+#     )
+
 @lru_cache(maxsize=1)
-def _get_llm() -> ChatGroq:
-    return ChatGroq(
-        model="llama-3.3-70b-versatile",
-        api_key=os.getenv("GROQ_API_KEY"),
+def _get_llm() -> ChatOllama:
+    return ChatOllama(
+        model="mistral",
         temperature=0.1,
-        max_tokens=900,
-        max_retries=3,
+        num_predict=900,
     )
 
 
@@ -295,7 +304,6 @@ Format: Candidates/DomainSlug/
 {format_instructions}
 """
 
-
 def _format_exp(exp_years: float) -> str:
     if exp_years < 1.0:
         months = round(exp_years * 12)
@@ -311,7 +319,6 @@ def _format_exp_text(exp_years: float) -> str:
     return f"{yrs} year{'s' if yrs != 1 else ''}"
 
 
-
 def _build_chain():
     parser = JsonOutputParser(pydantic_object=ResumeAnalysisResult)
     prompt = ChatPromptTemplate.from_messages([
@@ -323,7 +330,6 @@ def _build_chain():
 
 
 _chain = None
-
 
 def _get_chain():
     global _chain
