@@ -8,11 +8,7 @@ from database.db import get_db
 from models.employee import TokenBlacklist
 from models.hr_user import HRUser
 from schemas.email_schema import HRLoginResponse, MessageResponse
-from utils.security import (
-    encrypt_token, decrypt_token,
-    create_access_token, decode_token,
-    get_current_employee
-)
+from utils.security import encrypt_token, get_current_employee
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -238,23 +234,6 @@ def outlook_connect(
 #Fixed JWT access token not generating — debugged .env loading issue and confirmed SECRET_KEY, ALGORITHM, EXPIRE_MINUTES all loading correctly.
 
 # ── Get Current HR User (Dependency)
-def get_current_user(
-    token: HTTPAuthorizationCredentials = Depends(oauth2_scheme),
-    db: Session = Depends(get_db)
-) -> HRUser:
-    payload = decode_token(token.credentials)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-
-    hr_user = db.query(HRUser).filter_by(id=int(payload.get("sub"))).first()
-    if not hr_user:
-        raise HTTPException(status_code=401, detail="User not found")
-    if not hr_user.is_active:
-        raise HTTPException(status_code=403, detail="Account disabled")
-
-    return hr_user
-
-
 # ── Get Profile 
 @router.get("/me")
 def get_profile(
