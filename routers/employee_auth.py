@@ -110,9 +110,22 @@ def logout(
     db: Session = Depends(get_db)
 ):
     token = credentials.credentials
+    employee_id = int(current_employee["sub"])
     
     if db.query(TokenBlacklist).filter_by(token=token).first():
         raise HTTPException(status_code=400, detail="Already logged out")
+
+    active_accounts = (
+        db.query(HRUser)
+        .filter(
+            HRUser.employee_id == employee_id,
+            HRUser.is_active.is_(True),
+        )
+        .all()
+    )
+    for account in active_accounts:
+        account.access_token = None
+        account.is_active = False
     
     blacklisted = TokenBlacklist(token=token)
     db.add(blacklisted)

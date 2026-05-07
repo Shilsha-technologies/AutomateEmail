@@ -291,6 +291,19 @@ def logout(
     if db.query(TokenBlacklist).filter_by(token=credentials.credentials).first():
         raise HTTPException(status_code=400, detail="Already logged out")
 
+    employee_id = int(current_employee.get("employee_id") or current_employee.get("sub"))
+    active_accounts = (
+        db.query(HRUser)
+        .filter(
+            HRUser.employee_id == employee_id,
+            HRUser.is_active.is_(True),
+        )
+        .all()
+    )
+    for account in active_accounts:
+        account.access_token = None
+        account.is_active = False
+
     db.add(TokenBlacklist(token=credentials.credentials))
     db.commit()
     # JWT is stateless — frontend just deletes token
