@@ -4,17 +4,19 @@ import logging
 import os
 import re
 from datetime import datetime
-from functools import lru_cache
 from zoneinfo import ZoneInfo
 import asyncio
 
-from langchain_core.output_parsers import JsonOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import SystemMessage, HumanMessage
-# from langchain_groq import ChatGroq
-from langchain_ollama import ChatOllama
+from groq import Groq
 
-from resume_analyzer.schemas import ResumeAnalysisResult
+# ── Commented out: Ollama / LangChain imports ──────────────────
+# from functools import lru_cache
+# from langchain_core.output_parsers import JsonOutputParser
+# from langchain_core.prompts import ChatPromptTemplate
+# from langchain_core.messages import SystemMessage, HumanMessage
+# from langchain_ollama import ChatOllama
+# from resume_analyzer.schemas import ResumeAnalysisResult
+# ──────────────────────────────────────────────────────────────
 
 log = logging.getLogger(__name__)
 
@@ -43,300 +45,300 @@ EXAMPLE_DOMAINS: list[str] = [
 ]
 
 
+# ── Commented out: Ollama LLM ──────────────────────────────────
 # @lru_cache(maxsize=1)
-# def _get_llm() -> ChatGroq:
-#     return ChatGroq(
-#         model="llama-3.3-70b-versatile",
-#         api_key=os.getenv("GROQ_API_KEY"),
+# def _get_llm() -> ChatOllama:
+#     return ChatOllama(
+#         model="qwen2.5:3b",
 #         temperature=0.1,
-#         max_tokens=900,
-#         max_retries=3,
+#         num_predict=300,
+#         timeout=120,
 #     )
+# ──────────────────────────────────────────────────────────────
 
-@lru_cache(maxsize=1)
-def _get_llm() -> ChatOllama:
-    return ChatOllama(
-        model="mistral",
+# ── Groq client ────────────────────────────────────────────────
+_groq_client = None
+
+def _get_groq_client() -> Groq:
+    global _groq_client
+    if _groq_client is None:
+        _groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    return _groq_client
+
+
+def _call_groq(chain_input: dict) -> dict:
+    prompt = _HUMAN_PROMPT.format(**chain_input)
+
+    response = _get_groq_client().chat.completions.create(
+        model="llama-3.1-8b-instant",
+        max_tokens=400,
         temperature=0.1,
-        num_predict=900,
+        messages=[
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user",   "content": prompt},
+        ],
     )
 
+    content = response.choices[0].message.content.strip()
+
+    # Strip markdown fences if present
+    content = re.sub(r'^```json\s*', '', content)
+    content = re.sub(r'\s*```$',     '', content)
+
+    return json.loads(content)
+# ──────────────────────────────────────────────────────────────
 
 
-_SYSTEM_PROMPT = """\
-You are a senior technical recruiter with 15 years of experience evaluating software engineering resumes.
+_SYSTEM_PROMPT = """You are an expert ATS resume evaluation system and senior technical recruiter.
 
-Your ONLY job is to return a valid JSON object — no markdown, no code fences, no explanation, no preamble.
-Any response that is not pure JSON will be rejected.
+Return ONLY valid JSON.
+Do not return markdown.
+Do not return explanations.
+Do not return code fences.
+Do not return additional text.
 
-You must think carefully before assigning each field. Never default, guess, or use placeholder values.
-Every field must be derived from the actual resume content provided.
+Every field must be derived strictly from the resume data provided.
+Never guess unavailable information.
 """
 
-_HUMAN_PROMPT = """\
-════════════════════════════════════
-CANDIDATE DATA
-════════════════════════════════════
-Name                : {name}
-Email               : {email}
-Profile Summary     : {profile_summary}
-Skills              : {skills}
-Total Experience    : {experience_years}
-Work Entries        : {experience_entries}
-Education Entries   : {education_count}
-Projects            : {projects_count}
-Certifications      : {certifications_count}
+_HUMAN_PROMPT = """CANDIDATE DATA
 
-Resume Text (first 2500 chars):
+Name: {name}
+Email: {email}
+Experience: {experience_years}
+Profile Summary: {profile_summary}
+
+Pre-extracted Skills (USE THESE — already verified from resume):
+{skills}
+
+Work Experience entries: {experience_entries}
+Projects count: {projects_count}
+Education count: {education_count}
+Certifications count: {certifications_count}
+
+==================================================
+RAW RESUME TEXT (PRIMARY SOURCE OF TRUTH)
+==================================================
+
 {raw_text_snippet}
 
-════════════════════════════════════
-FIELD-BY-FIELD INSTRUCTIONS
-════════════════════════════════════
+==================================================
+IMPORTANT RAW TEXT RULES
+==================================================
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FIELD 1 — name
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Extract the candidate's REAL full name from the resume text.
+The raw resume text above is the PRIMARY SOURCE OF TRUTH.
 
-STRICT RULES:
-  • The "Name" field above is parsed from the PDF header — it is OFTEN WRONG.
-    It may contain section headings like "Professional Experience", "Professional Summary",
-    "Profile", "About Me", "Objective", etc. — these are NOT names.
-  • Read the raw resume text carefully. The real name is almost always:
-      – The very first line of the resume, OR
-      – A large-font heading at the top, OR
-      – Present in the email address (e.g., john.doe@gmail.com → John Doe)
-  • A valid name:
-      ✓ Contains 2 words (first + last), occasionally 3
-      ✓ Each word starts with a capital letter
-      ✓ No digits, no special characters
-      ✓ Is NOT a section heading or job title
-  • If the name truly cannot be determined from any source, return "Unknown Candidate".
-  • NEVER return section headings as the name.
+Use the raw resume text to:
+- understand the candidate's actual role/domain
+- identify technologies and project context
+- understand education/work/project relevance
+- determine specialization accurately
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FIELD 2 — domain
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Infer the candidate's PRIMARY technical domain from their ENTIRE resume — 
-job titles, skills, projects, and profile summary all together.
+The structured fields above (skills, experience, counts)
+are already pre-validated and extracted from the same resume.
 
-DETECTION RULES (apply in order, first match wins):
+IMPORTANT:
+- Never invent information not present in the raw resume text.
+- Prefer evidence from the raw resume text over assumptions.
+- Use the raw text context to choose the MOST accurate domain.
 
-  ── FRONTEND ──────────────────────────────────────────────────────────
-  • Primarily React / Redux / Next.js / React Native (web)     → React Developer
-  • Primarily Angular / RxJS / NgRx / Angular Material         → Angular Developer
-  • Primarily Vue.js / Vuex / Nuxt.js                          → Vue.js Developer
-  • Primarily HTML / CSS / SASS / jQuery / Bootstrap (no FW)   → Frontend Developer
-  • Primarily React Native / Expo (mobile focus)               → React Native Developer
+If skills and raw resume context conflict,
+prefer the raw resume project/work experience context.
 
-  ── BACKEND ───────────────────────────────────────────────────────────
-  • Primarily Node.js / Express / NestJS (backend focus)       → Node.js Developer
-  • Primarily Python / Django / Flask / FastAPI                → Python Developer
-  • Primarily Java / Spring / SpringBoot / Hibernate           → Java Developer
-  • Primarily C# / .NET / ASP.NET / Entity Framework          → .NET Developer
-  • Primarily Go / Golang                                      → Golang Developer
-  • Primarily Ruby on Rails                                    → Ruby on Rails Developer
-  • Primarily PHP / Laravel / Symfony                         → PHP Developer
+==================================================
+TASKS
+==================================================
 
-  ── FULL STACK ────────────────────────────────────────────────────────
-  • Equal React + Node, MERN / MEAN / MEVN stack              → Full Stack Developer
-  • Next.js + Node.js / Prisma with equal frontend+backend    → Full Stack Developer
-  • SDE Intern with MERN / MEAN / full-stack projects          → Full Stack Developer
+1. Detect the SINGLE most suitable technical domain.
+2. Select top domain-relevant skills FROM the pre-extracted skills list above only.
+3. Determine seniority level.
+4. Calculate ATS score.
+5. Generate professional one-line summary.
+6. Generate filename.
+7. Generate folder path.
 
-  ── MOBILE ────────────────────────────────────────────────────────────
-  • Primarily Flutter / Dart                                   → Flutter Developer
-  • Primarily Swift / SwiftUI / Xcode / iOS SDK               → iOS Developer
-  • Primarily Kotlin / Jetpack Compose / Android SDK           → Android Developer
+==================================================
+DOMAIN DETECTION RULES
+==================================================
 
-  ── DATA & AI ─────────────────────────────────────────────────────────
-  • Primarily ML / TensorFlow / PyTorch / Scikit-learn / NLP  → Machine Learning Engineer
-  • Primarily LLMs / LangChain / RAG / Prompt Engineering     → AI/ML Engineer
-  • Primarily Tableau / Power BI / Looker / data analysis     → Data Analyst
-  • Primarily Spark / Hadoop / Airflow / ETL pipelines         → Data Engineer
-  • Primarily statistics / R / Python (analysis + modeling)   → Data Scientist
+Do NOT classify candidate only from skills list.
+Use projects, work experience, and resume context from raw text.
 
-  ── DEVOPS & CLOUD ────────────────────────────────────────────────────
-  • Primarily Docker / Kubernetes / Terraform / CI-CD         → DevOps Engineer
-  • Primarily AWS / GCP / Azure architecture and services     → Cloud Engineer
-  • Primarily security / penetration testing / compliance     → Security Engineer
+Frontend:
+- React / Redux / Next.js → React Developer
+- Angular / NgRx / RxJS → Angular Developer
+- Vue.js / Nuxt.js → Vue.js Developer
 
-  ── DESIGN ────────────────────────────────────────────────────────────
-  • Primarily Figma / Adobe XD / Sketch / UI/UX               → UI/UX Designer
+Backend:
+- Python / Django / Flask / FastAPI → Python Developer
+- Node.js / Express / NestJS → Node.js Developer
+- Java / Spring Boot → Java Developer
+- PHP / Laravel → PHP Developer
+- C# / .NET → .NET Developer
 
-  ── FALLBACK ──────────────────────────────────────────────────────────
-  • No detectable tech pattern                                → General
+Full Stack:
+- MERN / MEAN / React + Node.js equally → Full Stack Developer
 
-HARD RULES:
-  • Analyze the FULL resume text, not just the skills list.
-  • Do NOT assign a domain based on one minor library mention.
-  • A candidate listing Python + ML/TensorFlow/PyTorch is NOT a "Python Developer" — they are a "Machine Learning Engineer".
-  • A candidate listing Angular as a primary skill is NOT a "React Developer".
-  • Always prefer the most specific and accurate domain.
-  • Never return "General" if any tech pattern is detectable.
+Mobile:
+- Flutter / Dart → Flutter Developer
+- Kotlin / Android SDK → Android Developer
+- Swift / SwiftUI → iOS Developer
 
-Examples of WRONG vs CORRECT domain assignment:
-  ✗ WRONG : Skills=[Angular, Python, ML, SQL]         → React Developer
-  ✓ RIGHT : Skills=[Angular, Python, ML, SQL]         → Machine Learning Engineer (ML is primary stack)
+Data & AI:
+- TensorFlow / PyTorch / NLP / ML → Machine Learning Engineer
+- LangChain / RAG / LLMs → AI/ML Engineer
+- Power BI / Tableau / Analytics → Data Analyst
+- Spark / Hadoop / Airflow / ETL → Data Engineer
+- Statistics / Modeling / Research → Data Scientist
 
-  ✗ WRONG : Skills=[React, Node.js, Express, MongoDB] → React Developer
-  ✓ RIGHT : Skills=[React, Node.js, Express, MongoDB] → Full Stack Developer (equal frontend+backend)
+DevOps & Cloud:
+- Docker / Kubernetes / CI-CD → DevOps Engineer
+- AWS / Azure / GCP Architecture → Cloud Engineer
+- Security / PenTesting → Security Engineer
 
-  ✗ WRONG : Skills=[Python, Django, FastAPI, NumPy]   → Data Scientist
-  ✓ RIGHT : Skills=[Python, Django, FastAPI, NumPy]   → Python Developer (backend focus)
+Design:
+- Figma / UI / UX → UI/UX Designer
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FIELD 3 — skills
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-List the top 10–20 technical skills extracted from the resume.
+Fallback:
+- No strong pattern → General
 
-RULES:
-  • Use exact short professional names: "React.js", "Node.js", "Redux", "NestJS", "AWS", "PostgreSQL"
-  • PRIORITIZE domain-relevant skills first, then supporting skills
-  • Exclude soft skills ("Communication", "Teamwork", "Leadership") UNLESS the resume is non-technical
-  • Exclude vague items like "Problem Solving", "SDLC", "Agile" unless specifically technical
-  • Return as a JSON array of strings
+IMPORTANT:
+- Use ENTIRE resume context.
+- Prefer the MOST specialized matching domain.
+- Do NOT classify based on one minor skill mention.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FIELD 4 — level
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Determine seniority level based ONLY on the experience_years value above:
+==================================================
+LEVEL RULES
+==================================================
 
-  Fresher   = 0–1 year    (includes internships < 1 year, 0 months)
-  Mid-Level = 2–4 years
-  Senior    = 5+ years
+0 to 1 year   → Fresher
+2 to 4 years  → Mid-Level
+5+ years      → Senior
 
-Return exactly one of: "Fresher", "Mid-Level", "Senior"
+Use the Experience field above as the primary source for years.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FIELD 5 — score  ← CALCULATE THIS CAREFULLY, NEVER DEFAULT TO 50
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Score the candidate from 0–100 using this rubric. Think step by step.
+==================================================
+ATS SCORING RULES
+==================================================
 
-  ┌─────────────────────────────────────────────────┬──────────┐
-  │ CATEGORY                                        │ MAX PTS  │
-  ├─────────────────────────────────────────────────┼──────────┤
-  │ A. Skills relevance to detected domain          │   30 pts │
-  │ B. Work experience quality & depth              │   30 pts │
-  │ C. Education background                         │   20 pts │
-  │ D. Projects + Certifications                    │   20 pts │
-  └─────────────────────────────────────────────────┴──────────┘
+Score candidate from 0-100 using:
 
-  CATEGORY A — Skills (0–30):
-    25–30 : 8+ highly relevant domain skills, advanced stack
-    18–24 : 5–7 relevant domain skills, solid coverage
-    10–17 : 3–4 relevant skills, some gaps
-     0–9  : Mostly irrelevant or fewer than 3 domain skills
+A. Skills Relevance         → 30
+B. Work Experience          → 30
+C. Education                → 20
+D. Projects/Certifications → 20
 
-  CATEGORY B — Work Experience (0–30):
-    25–30 : 5+ years at reputable companies, senior roles
-    18–24 : 2–4 years, relevant job titles, good progression
-    10–17 : <2 years, internships only, or unrelated roles
-     0–9  : No work experience or completely unrelated
+Guidelines:
+- Strong domain alignment increases score
+- Strong projects improve score
+- Relevant experience improves score
+- Weak or unrelated resumes reduce score
+- Never default to 50
 
-  CATEGORY C — Education (0–20):
-    17–20 : Tier-1 university (IIT, NIT, BITS, top global), CS/Engineering degree
-    12–16 : Good university, relevant degree (CS, IT, ECE, MCA)
-     6–11 : Average college, semi-relevant degree
-     0–5  : Unknown institution, unrelated degree, or no education listed
+==================================================
+SUMMARY RULES
+==================================================
 
-  CATEGORY D — Projects + Certifications (0–20):
-    17–20 : 4+ strong domain-relevant projects AND 2+ certifications
-    12–16 : 2–3 solid projects OR strong certifications
-     6–11 : 1 project OR 1 certification
-     0–5  : No projects and no certifications
+Write EXACTLY one sentence:
 
-  EXAMPLES of expected scores:
-    • 6-yr Senior Node.js dev, IIT grad, 5 projects, 3 certs    → 88–95
-    • 3-yr Mid React dev, good university, 3 projects, 1 cert   → 65–75
-    • 10-month Fresher, relevant skills, 2 projects, no cert    → 45–58
-    • 0-month Fresher, weak skills, 1 project, no cert          → 25–38
-
-  NEVER return 50 as a default. Always compute the actual score.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FIELD 6 — summary
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Write exactly ONE professional sentence, 15–25 words.
-
-Format: "<Role> with <exp_label> of experience in <top 2–3 DOMAIN-RELEVANT skills>."
-
-RULES:
-  • Use EXACTLY this experience label (do not paraphrase): {exp_label}
-  • Skills in the summary MUST be the most relevant to the domain, NOT just the first 3 from the skills list
-  • Role must match the domain exactly
-  • Never use placeholder text
-
-CORRECT examples:
-  "React Developer with 3 years of experience in React.js, Redux, and Next.js."
-  "Machine Learning Engineer with 6 months of experience in TensorFlow, PyTorch, and Scikit-learn."
-  "Full Stack Developer with 2 years of experience in React.js, Node.js, and MongoDB."
-
-WRONG examples (do not do this):
-  ✗ "React Developer with 3 years of experience in JWT, Postman, MySQL."   ← irrelevant skills
-  ✗ "Python Developer with 0 months of experience in Django, MySQL, Deep Learning."  ← mixed domain skills
-  ✗ "React Developer with 10 months of experience in Prisma, DSA, Python." ← non-React skills listed first
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FIELD 7 — filename
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Use EXACTLY this format: FirstName_LastName_DomainSlug_{exp_label}.pdf
-
-  • Use the CORRECTED name from Field 1 (not the raw input name)
-  • DomainSlug = domain with spaces replaced by underscores (e.g., React_Developer, Node_js_Developer)
-  • exp_label = EXACTLY: {exp_label}
-  • Underscores only, no spaces, no hyphens
+"<Domain> with <experience from the Experience field above> of experience in <top 2-3 relevant skills>."
 
 Examples:
-  Ariba_Nusra_React_Developer_3Yrs.pdf
-  Sakshi_Semwal_Machine_Learning_Engineer_2Months.pdf
-  Ankit_Gaur_Node_js_Developer_6Yrs.pdf
+- React Developer with 2 years 9 months of experience in React.js, Redux, and Next.js.
+- Machine Learning Engineer with 6 months of experience in TensorFlow, PyTorch, and Scikit-learn.
+- Java Developer with 6 months of experience in Spring Boot, MySQL, and REST APIs.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FIELD 8 — folder
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMPORTANT: Use the exact experience text provided in the Experience field. Do not invent or change it.
+
+==================================================
+FILENAME RULES
+==================================================
+
+Format: FirstName_LastName_DomainSlug_ExpLabel.pdf
+
+ExpLabel examples: 2Yrs9Mon, 6Mon, 3Yrs, Fresher (if 0 experience)
+
+Examples:
+- Shubhav_Kumar_React_Developer_2Yrs9Mon.pdf
+- Abhay_Rana_Machine_Learning_Engineer_6Mon.pdf
+- Vishwas_Maurya_Java_Developer_6Mon.pdf
+
+==================================================
+FOLDER RULES
+==================================================
+
 Format: Candidates/DomainSlug/
-  • DomainSlug MUST exactly match the slug used in the filename
-  • Example: Candidates/React_Developer/ or Candidates/Machine_Learning_Engineer/
 
-════════════════════════════════════
+==================================================
+OUTPUT REQUIREMENTS
+==================================================
 
-{format_instructions}
+Return ONLY valid JSON matching this schema exactly:
+
+{{
+  "name":"string",
+  "domain": "string",
+  "skills": ["string"],
+  "level": "string",
+  "score": 0,
+  "summary": "string",
+  "filename": "string",
+  "folder": "string"
+}}
+
+IMPORTANT:
+- skills must be chosen FROM the pre-extracted skills list above only
+- score must be between 0 and 100
+- Return ONLY the JSON object, nothing else
 """
 
-def _format_exp(exp_years: float) -> str:
-    if exp_years < 1.0:
-        months = round(exp_years * 12)
-        return f"{months}Months" if months > 0 else "0Months"
-    return f"{int(exp_years)}Yrs"
+
+def _format_exp_label(exp_years: float) -> str:
+    if exp_years is None or exp_years == 0.0:
+        return "Fresher"
+    total_months = round(exp_years * 12)
+    years  = total_months // 12
+    months = total_months % 12
+    if years and months:
+        return f"{years}Yrs{months}Mon"
+    elif years:
+        return f"{years}Yrs"
+    else:
+        return f"{months}Mon"
 
 
 def _format_exp_text(exp_years: float) -> str:
-    if exp_years < 1.0:
-        months = round(exp_years * 12)
+    if exp_years is None or exp_years == 0.0:
+        return "0 months"
+    total_months = round(exp_years * 12)
+    years  = total_months // 12
+    months = total_months % 12
+    if years and months:
+        return f"{years} year{'s' if years != 1 else ''} {months} month{'s' if months != 1 else ''}"
+    elif years:
+        return f"{years} year{'s' if years != 1 else ''}"
+    else:
         return f"{months} month{'s' if months != 1 else ''}"
-    yrs = int(exp_years)
-    return f"{yrs} year{'s' if yrs != 1 else ''}"
 
 
-def _build_chain():
-    parser = JsonOutputParser(pydantic_object=ResumeAnalysisResult)
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", _SYSTEM_PROMPT),
-        ("human", _HUMAN_PROMPT),
-    ])
-    prompt = prompt.partial(format_instructions=parser.get_format_instructions())
-    return prompt | _get_llm() | parser
-
-
-_chain = None
-
-def _get_chain():
-    global _chain
-    if _chain is None:
-        _chain = _build_chain()
-    return _chain
-
+# ── Commented out: LangChain chain builder ─────────────────────
+# def _build_chain():
+#     parser = JsonOutputParser(pydantic_object=ResumeAnalysisResult)
+#     prompt = ChatPromptTemplate.from_messages([
+#         SystemMessage(content=_SYSTEM_PROMPT),
+#         HumanMessage(content=_HUMAN_PROMPT),
+#     ])
+#     prompt = prompt.partial(format_instructions=parser.get_format_instructions())
+#     return prompt | _get_llm() | parser
+#
+# _chain = None
+#
+# def _get_chain():
+#     global _chain
+#     if _chain is None:
+#         _chain = _build_chain()
+#     return _chain
+# ──────────────────────────────────────────────────────────────
 
 def _parse_date(raw: str) -> datetime | None:
     if not raw:
@@ -352,16 +354,8 @@ def _parse_date(raw: str) -> datetime | None:
     )
 
     formats = [
-        "%Y-%m",
-        "%b %Y",
-        "%B %Y",
-        "%m/%Y",
-        "%b-%Y",
-        "%B-%Y",
-        "%Y",
-        "%b %d, %Y",
-        "%d %b %Y",
-        "%Y-%m-%d",
+        "%Y-%m", "%b %Y", "%B %Y", "%m/%Y", "%b-%Y",
+        "%B-%Y", "%Y", "%b %d, %Y", "%d %b %Y", "%Y-%m-%d",
     ]
     for fmt in formats:
         try:
@@ -401,7 +395,7 @@ def _calculate_exp_years(work_experiences: list) -> float:
             continue
 
         start = _parse_date(str(sd_raw))
-        end = _parse_date(str(ed_raw)) if ed_raw else now
+        end   = _parse_date(str(ed_raw)) if ed_raw else now
 
         if start is None:
             log.warning("[EXP] Could not parse startDate: %r", sd_raw)
@@ -433,21 +427,24 @@ def _calculate_exp_years(work_experiences: list) -> float:
             merged.append((s, e))
 
     total_days = sum((e - s).days for s, e in merged)
-    result = round(total_days / 365.25, 1)
-    log.info("[EXP] Total: %.1f years from %d merged intervals", result, len(merged))
+    result = round(total_days / 365.25, 2)
+    log.info("[EXP] Total: %.2f years from %d merged intervals", result, len(merged))
     return result
 
 
 def _calculate_exp_years_from_parsed(parsed: dict) -> float:
+    pre = parsed.get("exp_years")
+    if pre is not None:
+        log.info("[EXP] Using pre-extracted exp_years: %.2f", pre)
+        return float(pre)
+
     work_exp = parsed.get("work_experiences") or []
     work_exp = [e for e in work_exp if isinstance(e, dict) and e.get("startDate")]
-
     if work_exp:
         return _calculate_exp_years(work_exp)
 
     llm_exp = parsed.get("experience") or []
     llm_exp = [e for e in llm_exp if isinstance(e, dict) and e.get("startDate")]
-
     if llm_exp:
         return _calculate_exp_years(llm_exp)
 
@@ -467,10 +464,10 @@ def _level(exp_years: float) -> str:
 
 
 def _build_filename(name: str, domain: str, exp_years: float) -> str:
-    safe_name = _slugify(name) or "Candidate"
+    safe_name   = _slugify(name) or "Candidate"
     domain_slug = _slugify(domain)
-    exp_str = _format_exp(exp_years)
-    return f"{safe_name}_{domain_slug}_{exp_str}.pdf"
+    exp_label   = _format_exp_label(exp_years)
+    return f"{safe_name}_{domain_slug}_{exp_label}.pdf"
 
 
 def _build_folder(domain: str) -> str:
@@ -478,7 +475,7 @@ def _build_folder(domain: str) -> str:
 
 
 def _build_chain_input(parsed: dict, exp_years: float) -> dict:
-    name = (parsed.get("name") or "Candidate").strip()
+    name  = (parsed.get("name") or "Candidate").strip()
     email = parsed.get("email") or ""
     skills = parsed.get("skills") or []
 
@@ -491,41 +488,40 @@ def _build_chain_input(parsed: dict, exp_years: float) -> dict:
     profile_summary = parsed.get("summary") or parsed.get("profile") or raw_text[:300]
 
     return {
-        "name": name,
-        "email": email,
-        "profile_summary": profile_summary,
-        "skills": ", ".join(str(s) for s in skills[:25]),
-        "experience_years": _format_exp_text(exp_years),
-        "exp_label": _format_exp(exp_years),
-        "experience_entries": len(work_exp),
-        "education_count": len(parsed.get("education") or []),
-        "projects_count": len(parsed.get("projects") or []),
+        "name":                 name,
+        "email":                email,
+        "profile_summary":      profile_summary,
+        "skills":               ", ".join(str(s) for s in skills),
+        "experience_years":     _format_exp_text(exp_years),
+        "exp_label":            _format_exp_label(exp_years),
+        "experience_entries":   len(work_exp),
+        "education_count":      len(parsed.get("education") or []),
+        "projects_count":       len(parsed.get("projects") or []),
         "certifications_count": len(parsed.get("certifications") or []),
-        "raw_text_snippet": raw_text,
-        "example_domains": "\n".join(f"     • {d}" for d in EXAMPLE_DOMAINS),
+        "raw_text_snippet":     raw_text,
+        "example_domains":      "\n".join(f"     • {d}" for d in EXAMPLE_DOMAINS),
     }
 
 
 def _rule_based_fallback(parsed: dict) -> dict:
     exp_years = _calculate_exp_years_from_parsed(parsed)
-
-    raw_text = (parsed.get("raw_text") or json.dumps(parsed)).lower()
-    name = (parsed.get("name") or "Candidate").strip()
-    skills = [str(s) for s in (parsed.get("skills") or [])[:10]]
+    raw_text  = (parsed.get("raw_text") or json.dumps(parsed)).lower()
+    name      = (parsed.get("name") or "Candidate").strip()
+    skills    = [str(s) for s in (parsed.get("skills") or [])]
 
     hints = {
-        "React Developer": ["react", "redux", "next.js"],
-        "Node.js Developer": ["node.js", "nodejs", "nestjs"],
-        "Python Developer": ["python", "django", "flask", "fastapi"],
-        "Java Developer": ["java", "spring"],
-        "Full Stack Developer": ["mern", "mean", "full stack", "fullstack"],
+        "React Developer":           ["react", "redux", "next.js"],
+        "Node.js Developer":         ["node.js", "nodejs", "nestjs"],
+        "Python Developer":          ["python", "django", "flask", "fastapi"],
+        "Java Developer":            ["java", "spring"],
+        "Full Stack Developer":      ["mern", "mean", "full stack", "fullstack"],
         "Machine Learning Engineer": ["machine learning", "tensorflow", "pytorch"],
-        "Data Analyst": ["tableau", "power bi", "data analysis"],
-        "DevOps Engineer": ["docker", "kubernetes", "terraform"],
-        "UI/UX Designer": ["figma", "wireframe", "ux"],
-        "Flutter Developer": ["flutter", "dart"],
-        "QA Engineer": ["selenium", "cypress", "playwright"],
-        "HR": ["recruitment", "talent acquisition"],
+        "Data Analyst":              ["tableau", "power bi", "data analysis"],
+        "DevOps Engineer":           ["docker", "kubernetes", "terraform"],
+        "UI/UX Designer":            ["figma", "wireframe", "ux"],
+        "Flutter Developer":         ["flutter", "dart"],
+        "QA Engineer":               ["selenium", "cypress", "playwright"],
+        "HR":                        ["recruitment", "talent acquisition"],
     }
 
     best_domain, best_score = "General", 0
@@ -537,40 +533,72 @@ def _rule_based_fallback(parsed: dict) -> dict:
     top_skills = ", ".join(skills[:3]) or "relevant technologies"
 
     return {
-        "domain": best_domain,
-        "skills": skills,
-        "level": _level(exp_years),
-        "score": 50.0,
-        "summary": f"{best_domain} with {_format_exp_text(exp_years)} of experience in {top_skills}.",
-        "filename": _build_filename(name, best_domain, exp_years),
-        "folder": _build_folder(best_domain),
+        "name":       name,
+        "email":      parsed.get("email") or "",
+        "domain":     best_domain,
+        "skills":     skills,
+        "level":      _level(exp_years),
+        "score":      50,
+        "summary":    f"{best_domain} with {_format_exp_text(exp_years)} of experience in {top_skills}.",
+        "filename":   _build_filename(name, best_domain, exp_years),
+        "folder":     _build_folder(best_domain),
+        "confidence": 40,
     }
 
 
 async def run_chain(parsed_resume: dict) -> dict:
     exp_years = _calculate_exp_years_from_parsed(parsed_resume)
+    log.info("[CHAIN] exp_years=%.2f for candidate=%s", exp_years, parsed_resume.get("name"))
+
+    pre_extracted_skills = parsed_resume.get("skills") or []
+    name = (parsed_resume.get("name") or "Candidate").strip()
 
     try:
         chain_input = _build_chain_input(parsed_resume, exp_years)
-        result = await asyncio.to_thread(_get_chain().invoke, chain_input)
+
+        # ── Commented out: Ollama call ─────────────────────────
+        # result = await asyncio.wait_for(
+        #     asyncio.to_thread(_get_chain().invoke, chain_input),
+        #     timeout=120
+        # )
+        # ──────────────────────────────────────────────────────
+
+        # ── Groq API call ──────────────────────────────────────
+        result = await asyncio.wait_for(
+            asyncio.to_thread(_call_groq, chain_input),
+            timeout=30
+        )
+        # ──────────────────────────────────────────────────────
 
         domain = (result.get("domain") or "General").strip()
-        name = (parsed_resume.get("name") or "Candidate").strip()
 
-        result["domain"] = domain
+        result["name"]     = name
+        result["email"]    = parsed_resume.get("email") or result.get("email") or ""
+        result["domain"]   = domain
         result["filename"] = _build_filename(name, domain, exp_years)
-        result["folder"] = _build_folder(domain)
+        result["folder"]   = _build_folder(domain)
+        result["level"]    = result.get("level") or _level(exp_years)
+
+        llm_skills = result.get("skills") or []
+        if not llm_skills or llm_skills == ["string"]:
+            result["skills"] = pre_extracted_skills
+        else:
+            pre_lower = {s.lower() for s in pre_extracted_skills}
+            filtered  = [s for s in llm_skills if s.lower() in pre_lower]
+            result["skills"] = filtered if filtered else pre_extracted_skills
 
         summary = result.get("summary", "")
         if not summary or len(summary) < 20 or "john doe" in summary.lower():
-            skills_list = result.get("skills") or []
-            top_skills = ", ".join(str(s) for s in skills_list[:3]) or "relevant technologies"
+            top_skills = ", ".join(str(s) for s in result["skills"][:3]) or "relevant technologies"
             result["summary"] = (
                 f"{domain} with {_format_exp_text(exp_years)} of experience in {top_skills}."
             )
 
         return result
 
+    except asyncio.TimeoutError:
+        log.error("[CHAIN] Groq timed out — using fallback")
+        return _rule_based_fallback(parsed_resume)
     except Exception as exc:
-        log.error("[CHAIN] LLM failed (%s: %s) — using fallback", type(exc).__name__, exc)
+        log.error("[CHAIN] Groq failed (%s: %s) — using fallback", type(exc).__name__, exc)
         return _rule_based_fallback(parsed_resume)

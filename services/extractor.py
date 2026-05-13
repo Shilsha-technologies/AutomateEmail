@@ -1,48 +1,5 @@
 import re
 from bs4 import BeautifulSoup
-# from langchain_groq import ChatGroq
-from langchain_ollama import ChatOllama
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-
-# _llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0) 
-_llm = ChatOllama(model="mistral", temperature=0)
-
-_POSITION_PROMPT = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are an email parser. Extract ONLY the job role/position title the candidate "
-     "is applying for. Return the title in Title Case. "
-     "If you cannot determine one, return the string null. "
-     "No explanation, no punctuation, just the title or null."),
-    ("human", "Subject: {subject}\n\nBody (first 500 chars):\n{body}")
-])
-
-_IS_JOB_APP_PROMPT = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are an email classifier. Decide if this email is a job application "
-     "(someone applying for a job, submitting a resume/CV, or following up on an application). "
-     "Reply with ONLY true or false."),
-    ("human", "Subject: {subject}\n\nBody (first 500 chars):\n{body}")
-])
-
-_position_chain   = _POSITION_PROMPT   | _llm | StrOutputParser()
-_is_job_app_chain = _IS_JOB_APP_PROMPT | _llm | StrOutputParser()
-
-
-def _llm_extract_job_position(subject: str, body: str) -> str | None:
-    result = _position_chain.invoke({
-        "subject": subject,
-        "body": body[:500]
-    }).strip()
-    return None if result.lower() == "null" else result
-
-
-def _llm_is_job_application(subject: str, body: str) -> bool:
-    result = _is_job_app_chain.invoke({
-        "subject": subject,
-        "body": body[:500]
-    }).strip().lower()
-    return result == "true"
 
 
 def clean_email_body(raw_body: str) -> str:
@@ -386,16 +343,10 @@ def _extract_via_keywords(subject: str, body: str) -> str | None:
     return None
 
 
-def extract_job_position(subject: str, body: str, sender_email: str = "", use_llm_fallback: bool = True) -> str | None:
+def extract_job_position(subject: str, body: str, sender_email: str = "") -> str | None:
     if _is_system_email(sender_email, subject):
         return None
-
-    result = _extract_from_subject(subject) or _extract_from_body(body) or _extract_via_keywords(subject, body)
-
-    if result is None and use_llm_fallback:
-        result = _llm_extract_job_position(subject, body)
-
-    return result
+    return _extract_from_subject(subject) or _extract_from_body(body) or _extract_via_keywords(subject, body)
 
 
 JOB_APPLICATION_KEYWORDS = re.compile(
@@ -410,7 +361,7 @@ JOB_APPLICATION_KEYWORDS = re.compile(
 )
 
 
-def is_job_application(subject: str, body: str, sender_email: str = "", use_llm_fallback: bool = True) -> bool:
+def is_job_application(subject: str, body: str, sender_email: str = "") -> bool:
     body = body or ""
     subject = subject or ""
 
@@ -471,12 +422,7 @@ def is_job_application(subject: str, body: str, sender_email: str = "", use_llm_
         return True
 
     text = f"{subject} {body[:500]}"
-    regex_result = bool(JOB_APPLICATION_KEYWORDS.search(text))
-
-    if not regex_result and use_llm_fallback:
-        return _llm_is_job_application(subject, body)
-
-    return regex_result
+    return bool(JOB_APPLICATION_KEYWORDS.search(text))
 
 
 def extract_attachment_info(attachment_names: list[str]) -> dict:
@@ -490,20 +436,20 @@ def extract_attachment_info(attachment_names: list[str]) -> dict:
         "attachment_types": list(set(types))
     }
 
+
 def extract_email_data(
     sender:           str,
     subject:          str,
     raw_body:         str,
     date:             str,
     attachment_names: list[str],
-    use_llm_fallback: bool = True
 ) -> dict:
     clean_body   = clean_email_body(raw_body)
     sender_info  = extract_sender_info(sender)
     sender_email = sender_info["sender_email"] or ""
 
-    job_position    = extract_job_position(subject, clean_body, sender_email, use_llm_fallback)
-    job_application = is_job_application(subject, clean_body, sender_email, use_llm_fallback)
+    job_position    = extract_job_position(subject, clean_body, sender_email)
+    job_application = is_job_application(subject, clean_body, sender_email)
     attachment_info = extract_attachment_info(attachment_names)
 
     if not sender_info["candidate_name"]:

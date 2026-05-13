@@ -5,10 +5,12 @@ from routers import auth
 from routers.email_routers import router as email_routers
 from routers.outreach import router as outreach_router
 from routers.employee_auth import router as employee_router  
-from routers.resume_router import router as resume_router
+#from routers.resume_router import router as resume_router
 from routers.template_router import router as template_router
 from routers.signature_router import router as signature_router
 from resume_analyzer.router import router as resume_analyzer_router
+from dotenv import load_dotenv
+load_dotenv()
 
 
 
@@ -32,7 +34,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(email_routers)
 app.include_router(employee_router)  
-app.include_router(resume_router) 
+#app.include_router(resume_router) 
 app.include_router(outreach_router)                   
 app.include_router(template_router)
 app.include_router(signature_router)

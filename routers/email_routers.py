@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import zipfile
 from enum import Enum
 from typing import Annotated, Optional
@@ -18,6 +19,7 @@ from models.email_model import Email
 from models.hr_user import HRUser
 from models.outreach_log import OutreachLog
 from routers.auth import resolve_employee_hr_user
+from resume_analyzer.integration import run_resume_analyzer
 from utils.security import get_current_employee
 import asyncio
 from schemas.email_schema import (
@@ -27,7 +29,8 @@ from schemas.email_schema import (
 )
 from services.extractor import extract_job_position
 from utils.date_utils import format_email_datetime
-from services.email_candidate_service import process_attachments_for_email
+
+
 
 router = APIRouter(prefix="/email", tags=["Email"])
 
@@ -927,14 +930,29 @@ def download_all(
 
 
 def parse_new_emails_background(provider_value, hr_user_id, sync_started_at):
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(_parse_new_emails_async(provider_value, hr_user_id, sync_started_at))
-        else:
-            loop.run_until_complete(_parse_new_emails_async(provider_value, hr_user_id, sync_started_at))
-    except RuntimeError:
-        asyncio.run(_parse_new_emails_async(provider_value, hr_user_id, sync_started_at))
+    asyncio.run(_parse_new_emails_async(provider_value, hr_user_id, sync_started_at))
+
+
+RESUME_EXTENSIONS = {"pdf", "docx", "xlsx"}
+
+NON_RESUME_PATTERN = re.compile(
+    r'\b(invoice|receipt|purchase[\s_-]?order|statement|bill|'
+    r'report|brochure|catalogue|catalog|nda|agreement|'
+    r'contract|policy|template|screenshot|logo|icon|banner|'
+    r'hero|qrcode|apple|google|store|tips|notif|manage|'
+    r'microsoft|profile|dummy|avatar)\b',
+    re.IGNORECASE
+)
+
+def _is_resume_attachment(filename: str) -> bool:
+    if not filename:
+        return False
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in RESUME_EXTENSIONS:
+        return False
+    if NON_RESUME_PATTERN.search(filename):
+        return False
+    return True
 
 
 async def _parse_new_emails_async(provider_value, hr_user_id, sync_started_at):
@@ -943,15 +961,16 @@ async def _parse_new_emails_async(provider_value, hr_user_id, sync_started_at):
         emails_with_attachments = (
             db.query(Email)
             .filter(
-                Email.provider        == provider_value,
-                Email.hr_user_id      == hr_user_id,
-                Email.has_attachments == True,
-                Email.created_at      >= sync_started_at,
+                Email.provider           == provider_value,
+                Email.hr_user_id         == hr_user_id,
+                Email.has_attachments    == True,
+                Email.is_job_application == True,
+                Email.created_at         >= sync_started_at,
             )
             .all()
         )
 
-        print(f"[BG] Parsing {len(emails_with_attachments)} new emails")
+        print(f"[BG] Analyzing {len(emails_with_attachments)} new emails")
 
         for email_record in emails_with_attachments:
             attachments = (
@@ -959,15 +978,28 @@ async def _parse_new_emails_async(provider_value, hr_user_id, sync_started_at):
                 .filter(Attachment.email_id == email_record.id)
                 .all()
             )
-            try:
-                await process_attachments_for_email(
-                    email_record, attachments, provider_value, db
-                )
-            except Exception as e:
-                import traceback
-                print(f"[BG ERROR] {email_record.subject}: {e}")
-                traceback.print_exc()
-                db.rollback()
+            for attachment in attachments:
+                if not _is_resume_attachment(attachment.filename):
+                    print(f"[SKIP] {attachment.filename}")
+                    continue
+
+                try:
+                    class _Candidate:
+                        name  = email_record.candidate_name  or "Unknown"
+                        email = email_record.candidate_email or ""
+
+                    await run_resume_analyzer(
+                        candidate = _Candidate(),
+                        file_path = attachment.file_path,
+                        filename  = attachment.filename,
+                        provider  = provider_value,
+                        db        = db,
+                    )
+                except Exception as e:
+                    import traceback
+                    print(f"[BG ERROR] {email_record.subject} / {attachment.filename}: {e}")
+                    traceback.print_exc()
+                    db.rollback()
 
     except Exception as e:
         import traceback
@@ -1003,7 +1035,7 @@ def manual_sync(
     )
 
     return {
-        "message":     f"Synced {count} new emails, parsing resumes in background",
+        "message":     f"Synced {count} new emails, analyzing in background",
         "hr_user_id":  current_user.id,
         "employee_id": current_user.employee_id,
         "provider":    provider_value,
