@@ -139,7 +139,7 @@ def build_attachment_payload(
         "id": attachment.id,
         "filename": attachment.filename,
         "file_type": attachment.file_type,
-        "file_size": attachment.file_size,
+        # "file_size": attachment.file_size,
         "is_viewed": viewed_at is not None,
         "viewed_at": viewed_at,
         "view_count": view_count_map.get(attachment.id, 0),
