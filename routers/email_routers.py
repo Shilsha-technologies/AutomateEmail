@@ -139,7 +139,7 @@ def build_attachment_payload(
         "id": attachment.id,
         "filename": attachment.filename,
         "file_type": attachment.file_type,
-        #"file_size": attachment.file_size,
+        # "file_size": attachment.file_size,
         "is_viewed": viewed_at is not None,
         "viewed_at": viewed_at,
         "view_count": view_count_map.get(attachment.id, 0),
@@ -436,7 +436,7 @@ def get_all_emails_with_details(
         query = query.filter(Email.is_job_application == is_job_application)
 
     if job_category is not None:
-        category_key = get_category_from_position(job_category)  # normalize input too
+        category_key = get_category_from_position(job_category)  
 
         all_positions = (
             db.query(Email.job_position)
