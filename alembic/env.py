@@ -20,8 +20,6 @@ config.set_main_option("sqlalchemy.url", database_url)
 
 from database.db import Base
 from models.attachment_activity import AttachmentActivity
-from models.attachment_model import Attachment
-from models.attachment_view import AttachmentView
 from models.candidate import Candidate
 from models.email_model import Email
 from models.email_template import EmailTemplate
@@ -65,7 +63,7 @@ def run_migrations_online() -> None:
 
     In this scenario we need to create an Engine
     and associate a connection with the context.
-
+ 
     """
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),

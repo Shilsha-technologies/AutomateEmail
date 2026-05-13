@@ -61,7 +61,7 @@ def get_current_employee(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: Session = Depends(get_db)
 ):
-    from models.employee import TokenBlacklist
+    from models.employee import Employee, TokenBlacklist
 
     token = credentials.credentials  
 
@@ -74,4 +74,22 @@ def get_current_employee(
     if payload.get("role") is None:
         raise HTTPException(status_code=401, detail="Employee login required")
 
-    return payload
+    employee_id = payload.get("employee_id") or payload.get("sub")
+    if employee_id is None:
+        raise HTTPException(status_code=401, detail="Invalid employee token")
+
+    employee = db.query(Employee).filter(Employee.id == int(employee_id)).first()
+    if not employee:
+        raise HTTPException(status_code=401, detail="Employee not found")
+    if not employee.is_active:
+        raise HTTPException(status_code=403, detail="Account disabled")
+
+    return {
+        "sub": str(employee.id),
+        "employee_id": employee.id,
+        "employee_email": employee.email,
+        "name": employee.name,
+        "role": employee.user_type,
+        "session_id": payload.get("session_id"),
+        "login_at": payload.get("login_at"),
+    }
