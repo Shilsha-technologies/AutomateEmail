@@ -82,7 +82,7 @@ async def analyze_only(file: UploadFile = File(...)):
             },
         )
 
-    analysis = analyze_resume(parsed_resume)
+    analysis = await analyze_resume(parsed_resume)
 
     return JSONResponse(content={
         "status": {"httpCode": "200", "success": True, "message": "Analysis complete"},
@@ -107,7 +107,7 @@ async def analyze_and_upload(
             },
         )
 
-    analysis = analyze_resume(parsed_resume)
+    analysis = await analyze_resume(parsed_resume)
 
     drive_result = {"file_id": "", "drive_link": ""}
     try:
