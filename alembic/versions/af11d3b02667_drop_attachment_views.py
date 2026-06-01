@@ -20,10 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.drop_index(op.f('ix_attachment_views_id'), table_name='attachment_views')
-    op.drop_index(op.f('ix_attachment_views_hr_user_id'), table_name='attachment_views')
-    op.drop_index(op.f('ix_attachment_views_attachment_id'), table_name='attachment_views')
-    op.drop_table('attachment_views')
+    op.execute('DROP TABLE IF EXISTS attachment_views CASCADE')
 
 
 def downgrade() -> None:

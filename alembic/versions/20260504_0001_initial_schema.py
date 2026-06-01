@@ -206,28 +206,8 @@ def upgrade() -> None:
     op.create_index(op.f("ix_attachment_activity_hr_user_id"), "attachment_activity", ["hr_user_id"], unique=False)
     op.create_index(op.f("ix_attachment_activity_id"), "attachment_activity", ["id"], unique=False)
 
-    op.create_table(
-        "attachment_views",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("attachment_id", sa.Integer(), nullable=False),
-        sa.Column("hr_user_id", sa.Integer(), nullable=False),
-        sa.Column("viewed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["attachment_id"], ["attachments.id"]),
-        sa.ForeignKeyConstraint(["hr_user_id"], ["hr_users.id"]),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("attachment_id", "hr_user_id", name="uix_attachment_hr_user"),
-    )
-    op.create_index(op.f("ix_attachment_views_attachment_id"), "attachment_views", ["attachment_id"], unique=False)
-    op.create_index(op.f("ix_attachment_views_hr_user_id"), "attachment_views", ["hr_user_id"], unique=False)
-    op.create_index(op.f("ix_attachment_views_id"), "attachment_views", ["id"], unique=False)
-
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_attachment_views_id"), table_name="attachment_views")
-    op.drop_index(op.f("ix_attachment_views_hr_user_id"), table_name="attachment_views")
-    op.drop_index(op.f("ix_attachment_views_attachment_id"), table_name="attachment_views")
-    op.drop_table("attachment_views")
-
     op.drop_index(op.f("ix_attachment_activity_id"), table_name="attachment_activity")
     op.drop_index(op.f("ix_attachment_activity_hr_user_id"), table_name="attachment_activity")
     op.drop_index(op.f("ix_attachment_activity_attachment_id"), table_name="attachment_activity")
