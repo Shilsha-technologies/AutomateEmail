@@ -1,25 +1,25 @@
 """initial schema
-
+ 
 Revision ID: 20260504_0001
 Revises:
 Create Date: 2026-05-04 00:00:01
-
+ 
 """
-
+ 
 from typing import Sequence, Union
-
+ 
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
-
-
+ 
+ 
 # revision identifiers, used by Alembic.
 revision: str = "20260504_0001"
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
-
-
+ 
+ 
 def upgrade() -> None:
     op.create_table(
         "candidates",
@@ -47,7 +47,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_candidates_id"), "candidates", ["id"], unique=False)
-
+ 
     op.create_table(
         "employees",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -63,7 +63,7 @@ def upgrade() -> None:
     op.create_index(op.f("ix_employees_email"), "employees", ["email"], unique=True)
     op.create_index(op.f("ix_employees_id"), "employees", ["id"], unique=False)
     op.create_index(op.f("ix_employees_mobile"), "employees", ["mobile"], unique=True)
-
+ 
     op.create_table(
         "resume_analysis",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -84,7 +84,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_resume_analysis_id"), "resume_analysis", ["id"], unique=False)
-
+ 
     op.create_table(
         "token_blacklist",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -94,7 +94,7 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix_token_blacklist_id"), "token_blacklist", ["id"], unique=False)
     op.create_index(op.f("ix_token_blacklist_token"), "token_blacklist", ["token"], unique=True)
-
+ 
     op.create_table(
         "hr_users",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -113,7 +113,7 @@ def upgrade() -> None:
     op.create_index(op.f("ix_hr_users_email"), "hr_users", ["email"], unique=False)
     op.create_index(op.f("ix_hr_users_employee_id"), "hr_users", ["employee_id"], unique=False)
     op.create_index(op.f("ix_hr_users_id"), "hr_users", ["id"], unique=False)
-
+ 
     op.create_table(
         "email_templates",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -128,7 +128,7 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix_email_templates_employee_id"), "email_templates", ["employee_id"], unique=False)
     op.create_index(op.f("ix_email_templates_id"), "email_templates", ["id"], unique=False)
-
+ 
     op.create_table(
         "signatures",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -142,7 +142,7 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix_signatures_employee_id"), "signatures", ["employee_id"], unique=False)
     op.create_index(op.f("ix_signatures_id"), "signatures", ["id"], unique=False)
-
+ 
     op.create_table(
         "emails",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -169,7 +169,7 @@ def upgrade() -> None:
     op.create_index(op.f("ix_emails_hr_user_id"), "emails", ["hr_user_id"], unique=False)
     op.create_index(op.f("ix_emails_id"), "emails", ["id"], unique=False)
     op.create_index(op.f("ix_emails_received_at"), "emails", ["received_at"], unique=False)
-
+ 
     op.create_table(
         "attachments",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -188,7 +188,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_attachments_id"), "attachments", ["id"], unique=False)
-
+ 
     op.create_table(
         "attachment_activity",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -205,68 +205,49 @@ def upgrade() -> None:
     op.create_index(op.f("ix_attachment_activity_attachment_id"), "attachment_activity", ["attachment_id"], unique=False)
     op.create_index(op.f("ix_attachment_activity_hr_user_id"), "attachment_activity", ["hr_user_id"], unique=False)
     op.create_index(op.f("ix_attachment_activity_id"), "attachment_activity", ["id"], unique=False)
-
-    op.create_table(
-        "attachment_views",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("attachment_id", sa.Integer(), nullable=False),
-        sa.Column("hr_user_id", sa.Integer(), nullable=False),
-        sa.Column("viewed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["attachment_id"], ["attachments.id"]),
-        sa.ForeignKeyConstraint(["hr_user_id"], ["hr_users.id"]),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("attachment_id", "hr_user_id", name="uix_attachment_hr_user"),
-    )
-    op.create_index(op.f("ix_attachment_views_attachment_id"), "attachment_views", ["attachment_id"], unique=False)
-    op.create_index(op.f("ix_attachment_views_hr_user_id"), "attachment_views", ["hr_user_id"], unique=False)
-    op.create_index(op.f("ix_attachment_views_id"), "attachment_views", ["id"], unique=False)
-
-
+ 
+ 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_attachment_views_id"), table_name="attachment_views")
-    op.drop_index(op.f("ix_attachment_views_hr_user_id"), table_name="attachment_views")
-    op.drop_index(op.f("ix_attachment_views_attachment_id"), table_name="attachment_views")
-    op.drop_table("attachment_views")
-
     op.drop_index(op.f("ix_attachment_activity_id"), table_name="attachment_activity")
     op.drop_index(op.f("ix_attachment_activity_hr_user_id"), table_name="attachment_activity")
     op.drop_index(op.f("ix_attachment_activity_attachment_id"), table_name="attachment_activity")
     op.drop_table("attachment_activity")
-
+ 
     op.drop_index(op.f("ix_attachments_id"), table_name="attachments")
     op.drop_table("attachments")
-
+ 
     op.drop_index(op.f("ix_emails_received_at"), table_name="emails")
     op.drop_index(op.f("ix_emails_id"), table_name="emails")
     op.drop_index(op.f("ix_emails_hr_user_id"), table_name="emails")
     op.drop_index(op.f("ix_emails_email_id"), table_name="emails")
     op.drop_index(op.f("ix_emails_candidate_email"), table_name="emails")
     op.drop_table("emails")
-
+ 
     op.drop_index(op.f("ix_signatures_id"), table_name="signatures")
     op.drop_index(op.f("ix_signatures_employee_id"), table_name="signatures")
     op.drop_table("signatures")
-
+ 
     op.drop_index(op.f("ix_email_templates_id"), table_name="email_templates")
     op.drop_index(op.f("ix_email_templates_employee_id"), table_name="email_templates")
     op.drop_table("email_templates")
-
+ 
     op.drop_index(op.f("ix_hr_users_id"), table_name="hr_users")
     op.drop_index(op.f("ix_hr_users_employee_id"), table_name="hr_users")
     op.drop_index(op.f("ix_hr_users_email"), table_name="hr_users")
     op.drop_table("hr_users")
-
+ 
     op.drop_index(op.f("ix_token_blacklist_token"), table_name="token_blacklist")
     op.drop_index(op.f("ix_token_blacklist_id"), table_name="token_blacklist")
     op.drop_table("token_blacklist")
-
+ 
     op.drop_index(op.f("ix_resume_analysis_id"), table_name="resume_analysis")
     op.drop_table("resume_analysis")
-
+ 
     op.drop_index(op.f("ix_employees_mobile"), table_name="employees")
     op.drop_index(op.f("ix_employees_id"), table_name="employees")
     op.drop_index(op.f("ix_employees_email"), table_name="employees")
     op.drop_table("employees")
-
+ 
     op.drop_index(op.f("ix_candidates_id"), table_name="candidates")
     op.drop_table("candidates")
+ 

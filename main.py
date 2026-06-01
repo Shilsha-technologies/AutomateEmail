@@ -12,13 +12,10 @@ from resume_analyzer.router import router as resume_analyzer_router
 from dotenv import load_dotenv
 load_dotenv()
 
-
-
-
 app = FastAPI(
     title       = "Email Parser API",
     description = "Hiring automation — Gmail & Outlook inbox parser",
-    version     = "1.0.0"
+    version     = "1.0.0",
 )
 
 # CORS for frontend dev
