@@ -10,6 +10,7 @@ class Email(Base):
 
     id               = Column(Integer, primary_key=True, index=True)
     hr_user_id       = Column(Integer, ForeignKey("hr_users.id"), nullable=True, index=True)
+    sync_job_id      = Column(Integer, ForeignKey("sync_jobs.id"), nullable=True, index=True)
     email_id         = Column(String, nullable=False, index=True)
     provider         = Column(String, nullable=False)
     candidate_name   = Column(String, nullable=True)

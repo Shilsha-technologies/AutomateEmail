@@ -26,6 +26,7 @@ from models.email_template import EmailTemplate
 from models.employee import Employee, TokenBlacklist
 from models.hr_user import HRUser
 from models.signature import Signature
+from models.sync_job import SyncJob
 from models.outreach_log import OutreachLog
 from resume_analyzer.models import ResumeAnalysis
 

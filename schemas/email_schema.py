@@ -38,6 +38,7 @@ class EmailSchema(BaseModel):
     id:              int
     email_id:        str
     provider:        str
+    sync_job_id:     Optional[int] = None
     candidate_name:  Optional[str] = None
     candidate_email: Optional[str] = None
     subject:         Optional[str] = None
@@ -70,6 +71,11 @@ class MessageResponse(BaseModel):
     hr_user_id: Optional[int] = None
     employee_id: Optional[int] = None
     provider: Optional[str] = None
+    sync_job_id: Optional[int] = None
+    sync_scope: Optional[str] = None
+    status: Optional[str] = None
+    days: Optional[int] = None
+    synced_count: Optional[int] = None
 
 
 class MultipleDownloadRequest(BaseModel):

@@ -3,7 +3,7 @@ import os
 import re
 import zipfile
 from enum import Enum
-from typing import Annotated, Optional
+from typing import Annotated, Optional, Literal
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, BackgroundTasks
 from fastapi.responses import FileResponse, StreamingResponse
@@ -18,6 +18,7 @@ from models.attachment_model import Attachment
 from models.email_model import Email
 from models.hr_user import HRUser
 from models.outreach_log import OutreachLog
+from models.sync_job import SyncJob
 from routers.auth import resolve_employee_hr_user
 from resume_analyzer.integration import run_resume_analyzer
 from utils.security import get_current_employee
@@ -283,6 +284,7 @@ def get_emails(
     page_size: int = Query(default=100, le=1000),
     search: str = Query(default=None),
     get_all: bool = Query(default=False),
+    sync_job_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: HRUser = Depends(get_employee_mailbox),
 ):
@@ -295,6 +297,9 @@ def get_emails(
         )
 
     query = get_scoped_email_query(db, current_user, provider_value)
+
+    if sync_job_id is not None:
+        query = query.filter(Email.sync_job_id == sync_job_id)
 
     if search:
         query = query.filter(
@@ -345,6 +350,7 @@ def get_emails(
                 "id": email.id,
                 "email_id": email.email_id,
                 "provider": email.provider,
+                "sync_job_id": email.sync_job_id,
                 "candidate_name": email.candidate_name,
                 "candidate_email": email.candidate_email,
                 "subject": email.subject,
@@ -392,6 +398,7 @@ def get_all_emails_with_details(
     subject: Optional[str] = Query(default=None,
                                    description="Search by subject"),
     get_all:            bool          = Query(default=False),
+    sync_job_id: int | None = Query(default=None),
     is_job_application: Optional[bool]= Query(default=None),
     date_from: Optional[str] = Query(
         default=None,
@@ -418,6 +425,9 @@ def get_all_emails_with_details(
         )
 
     query = get_scoped_email_query(db, current_user, provider_value)
+
+    if sync_job_id is not None:
+        query = query.filter(Email.sync_job_id == sync_job_id)
 
     if subject:
         query = query.filter(Email.subject.ilike(f"%{subject}%"))
@@ -546,6 +556,7 @@ def get_all_emails_with_details(
                 "id":              email.id,
                 "email_id":        email.email_id,
                 "provider":        email.provider,
+                "sync_job_id":     email.sync_job_id,
                 "candidate_name":  email.candidate_name,
                 "candidate_email": email.candidate_email,
                 "subject":         email.subject,
@@ -933,6 +944,94 @@ def parse_new_emails_background(provider_value, hr_user_id, sync_started_at):
     asyncio.run(_parse_new_emails_async(provider_value, hr_user_id, sync_started_at))
 
 
+def run_mail_sync_background(
+    sync_job_id: int,
+    provider_value: str,
+    hr_user_id: int,
+    days: int,
+    sync_scope: str,
+    sync_started_at,
+) -> None:
+    db = SessionLocal()
+    should_parse = False
+    try:
+        sync_job = db.query(SyncJob).filter(SyncJob.id == sync_job_id).first()
+        hr_user = db.query(HRUser).filter(HRUser.id == hr_user_id).first()
+        if not sync_job or not hr_user:
+            return
+
+        sync_job.status = "running"
+        sync_job.started_at = datetime.now(timezone.utc)
+        db.commit()
+
+        svc = get_provider_svc(provider_value)
+        sync_days = None if sync_scope == "all" else days
+        count = svc.fetch_and_store_emails(
+            hr_user,
+            db,
+            days=sync_days,
+            sync_job_id=sync_job_id,
+        )
+
+        sync_job = db.query(SyncJob).filter(SyncJob.id == sync_job_id).first()
+        if sync_job:
+            sync_job.status = "completed"
+            sync_job.synced_count = count
+            sync_job.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            should_parse = True
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        db.rollback()
+        sync_job = db.query(SyncJob).filter(SyncJob.id == sync_job_id).first()
+        if sync_job:
+            sync_job.status = "failed"
+            sync_job.error_message = str(e)
+            sync_job.completed_at = datetime.now(timezone.utc)
+            db.commit()
+    finally:
+        db.close()
+
+    if should_parse:
+        parse_new_emails_background(provider_value, hr_user_id, sync_started_at)
+
+
+@router.get("/sync-jobs/{sync_job_id}")
+def get_sync_job(
+    sync_job_id: int,
+    db: Session = Depends(get_db),
+    current_employee: dict = Depends(get_current_employee),
+):
+    employee_id = current_employee.get("employee_id") or current_employee.get("sub")
+    sync_job = (
+        db.query(SyncJob)
+        .filter(
+            SyncJob.id == sync_job_id,
+            SyncJob.employee_id == employee_id,
+        )
+        .first()
+    )
+    if not sync_job:
+        raise HTTPException(status_code=404, detail="Sync job not found")
+
+    return {
+        "id": sync_job.id,
+        "provider": sync_job.provider,
+        "hr_user_id": sync_job.hr_user_id,
+        "employee_id": sync_job.employee_id,
+        "sync_scope": sync_job.sync_scope,
+        "days": None if sync_job.sync_scope == "all" else sync_job.days,
+        "status": sync_job.status,
+        "synced_count": sync_job.synced_count,
+        "error_message": sync_job.error_message,
+        "created_at": sync_job.created_at,
+        "started_at": sync_job.started_at,
+        "completed_at": sync_job.completed_at,
+    }
+
+
 RESUME_EXTENSIONS = {"pdf", "docx", "xlsx"}
 
 NON_RESUME_PATTERN = re.compile(
@@ -1013,6 +1112,8 @@ async def _parse_new_emails_async(provider_value, hr_user_id, sync_started_at):
 def manual_sync(
     provider: ProviderParam,
     background_tasks: BackgroundTasks,
+    sync_scope: Literal["days", "all"] = Query(default="days"),
+    days: int = Query(default=7, ge=1, le=365),
     db: Session = Depends(get_db),
     current_user: HRUser = Depends(get_employee_mailbox),
 ):
@@ -1025,18 +1126,38 @@ def manual_sync(
         )
 
     sync_started_at = datetime.now(timezone.utc)
-    count = svc.fetch_and_store_emails(current_user, db)
+    sync_days = 0 if sync_scope == "all" else days
+    sync_job = SyncJob(
+        hr_user_id=current_user.id,
+        employee_id=current_user.employee_id,
+        provider=provider_value,
+        sync_scope=sync_scope,
+        days=sync_days,
+        status="queued",
+        synced_count=0,
+    )
+    db.add(sync_job)
+    db.commit()
+    db.refresh(sync_job)
 
     background_tasks.add_task(
-        parse_new_emails_background,
+        run_mail_sync_background,
+        sync_job_id=sync_job.id,
         provider_value=provider_value,
         hr_user_id=current_user.id,
+        days=sync_days,
+        sync_scope=sync_scope,
         sync_started_at=sync_started_at,
     )
 
     return {
-        "message":     f"Synced {count} new emails, analyzing in background",
+        "message":     "Sync started for all mail" if sync_scope == "all" else f"Sync started for last {days} days",
         "hr_user_id":  current_user.id,
         "employee_id": current_user.employee_id,
         "provider":    provider_value,
+        "sync_job_id":  sync_job.id,
+        "sync_scope":  sync_scope,
+        "status":      sync_job.status,
+        "days":        None if sync_scope == "all" else sync_days,
+        "synced_count": sync_job.synced_count,
     }
