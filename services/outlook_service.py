@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 CLIENT_ID      = os.getenv("OUTLOOK_CLIENT_ID")
-TENANT_ID      = "consumers"
+TENANT_ID      = "common"
 SCOPES         = ["https://graph.microsoft.com/Mail.Read",
                   "https://graph.microsoft.com/Mail.ReadBasic",
                   "https://graph.microsoft.com/Mail.Send"]

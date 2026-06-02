@@ -90,6 +90,8 @@ def _is_system_email(sender_email: str, subject: str) -> bool:
 
 
 def _is_blacklisted(text: str) -> bool:
+    if not text:
+        return False
     t = text.strip()
     return any(re.search(p, t, re.IGNORECASE) for p in JOB_ROLE_BLACKLIST)
 
@@ -164,6 +166,8 @@ _BARE_TECH_SUBJECT_PATTERN = re.compile(
 
 
 def _subject_is_pure_job_title(subject: str) -> bool:
+    if not subject:
+        return False
     return bool(_PURE_JOB_TITLE_PATTERN.match(subject.strip()))
 
 
@@ -277,6 +281,8 @@ def _extract_from_subject(subject: str) -> str | None:
         r'|job\s+opening\s+for|position\s+of|post\s+of)\s+',
         re.IGNORECASE
     )
+    if not subject:
+        return None
     stripped = subject.strip()
     remainder = _STRIP_PREFIX.sub('', stripped).strip().rstrip('.,;:')
     if _subject_is_pure_job_title(remainder) and not _is_blacklisted(remainder):
@@ -344,6 +350,9 @@ def _extract_via_keywords(subject: str, body: str) -> str | None:
 
 
 def extract_job_position(subject: str, body: str, sender_email: str = "") -> str | None:
+    # defensively handle None inputs
+    subject = subject or ""
+    body = body or ""
     if _is_system_email(sender_email, subject):
         return None
     return _extract_from_subject(subject) or _extract_from_body(body) or _extract_via_keywords(subject, body)
