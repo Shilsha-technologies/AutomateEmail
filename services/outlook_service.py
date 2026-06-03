@@ -11,11 +11,12 @@ from utils.date_utils        import parse_email_datetime
 from utils.security          import encrypt_token, decrypt_token
 from services.extractor         import extract_email_data        # ← added
 from services.attachment_reader import process_attachment         # ← added
+from services.attachment_reader import process_attachment, _is_resume_file
 from dotenv import load_dotenv
 
 load_dotenv()
 CLIENT_ID      = os.getenv("OUTLOOK_CLIENT_ID")
-TENANT_ID      = "consumers"
+TENANT_ID      = "common"
 SCOPES         = ["https://graph.microsoft.com/Mail.Read",
                   "https://graph.microsoft.com/Mail.ReadBasic",
                   "https://graph.microsoft.com/Mail.Send"]
@@ -257,8 +258,10 @@ def fetch_and_store_emails(hr_user: HRUser, db: Session):
                 candidate_name, candidate_email = _extract_name_email(
                     email_data.get("from", {})
                 )
-                subject = email_data.get("subject", "")
-                body = _get_body(email_data)
+                subject = email_data.get("subject", "") or ""
+                body = _get_body(email_data) or ""
+                subject = subject.replace("\x00", "")
+                body = body.replace("\x00", "")
                 date = email_data.get("receivedDateTime", "")
 
                 att_list = _save_attachment(token, msg_id)
@@ -291,21 +294,26 @@ def fetch_and_store_emails(hr_user: HRUser, db: Session):
                 db.flush()
 
                 for att_data in att_list:
+                    if not _is_resume_file(att_data["file_path"]):
+                        print(f"[SKIP DB] Not saving junk attachment: {att_data['filename']}")
+                        continue                                            #added this 
                     att_info = process_attachment(att_data["file_path"])
+                    existing = db.query(Attachment).filter_by(file_path=att_data["file_path"]).first()
+                    if existing:
+                        print(f"[SKIP DUPLICATE] {att_data['filename']} already exists")
+                        email_record.has_attachments = True
+                        continue
                     db.add(Attachment(
-                        email_id=email_record.id,
-                        filename=att_data["filename"],
-                        file_path=att_data["file_path"],
-                        file_size=att_data["file_size"],
-                        file_type=att_data["file_type"],
-                        phone=att_info.get("phone"),
-                        linkedin=att_info.get("linkedin"),
-                        github=att_info.get("github"),
-                        skills=json.dumps(att_info.get("skills", [])),
-                        experience=att_info.get("experience"),
+                        email_id   = email_record.id,
+                        filename   = att_data["filename"],
+                        file_path  = att_data["file_path"],
+                        file_type  = att_data["file_type"],
+                        email      = att_info.get("email"),
+                        skills     = json.dumps(att_info.get("skills", [])),
+                        experience = att_info.get("experience"),
+                        raw_text   = att_info.get("raw_text"),
                     ))
                     email_record.has_attachments = True
-
                 db.commit()
                 new_count += 1
 

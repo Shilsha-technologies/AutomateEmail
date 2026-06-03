@@ -1,5 +1,5 @@
 .env
-myenv
+myenv/
 credentials.json
 drive_credentials.json
 __pycache__/
@@ -9,3 +9,15 @@ attachments/
 venv/
 oauth_credentials.json
 token.json
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+alembic/__pycache__/
+alembic/versions/__pycache__/

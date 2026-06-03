@@ -17,41 +17,35 @@ router = APIRouter(prefix="/resume-analyzer", tags=["Resume Analyzer"])
 _NOW_IST = lambda: datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
 
 
+
 def _extract_and_parse(file: UploadFile) -> dict:
+    import tempfile, shutil
+    from services.attachment_reader import read_attachment, extract_from_attachment_text
 
-    from services.resume_service import (
-        extract_text,
-        extract_text_and_links,
-        parse_resume_text,
-        parse_with_llm,
-        sanitize_text,
-    )
+    suffix = os.path.splitext(file.filename)[-1]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        tmp_path = tmp.name
 
-    if file.filename.lower().endswith(".pdf"):
-        text, _ = extract_text_and_links(file)
-    else:
-        text = extract_text(file)
+    text = read_attachment(tmp_path)
+    os.unlink(tmp_path)
 
     if not text or not text.strip():
         return {}
 
-    parsed   = parse_resume_text(text)
-    llm_data = parse_with_llm(text)
-
-    skills = list(dict.fromkeys(
-        (parsed.get("skills") or []) + (llm_data.get("skills") or [])
-    ))
-
+    extracted = extract_from_attachment_text(text)
     return {
-        "name":           parsed.get("name") or llm_data.get("name") or "Unknown",
-        "email":          parsed.get("email") or llm_data.get("email") or "",
-        "skills":         skills,
-        "experience":     llm_data.get("experience") or parsed.get("work_experiences") or [],
-        "education":      llm_data.get("education") or parsed.get("education") or [],
-        "projects":       llm_data.get("projects") or parsed.get("projects") or [],
-        "certifications": llm_data.get("certifications") or parsed.get("certifications") or [],
-        "raw_text":       sanitize_text(text),
+        "name":             "Unknown",
+        "email":            "",
+        "skills":           extracted.get("skills", []),
+        "experience":       [],
+        "work_experiences": [],
+        "education":        [],
+        "projects":         [],
+        "certifications":   [],
+        "raw_text":         text,
     }
+
 
 
 def _record_to_dict(r: ResumeAnalysis) -> dict:
@@ -88,7 +82,7 @@ async def analyze_only(file: UploadFile = File(...)):
             },
         )
 
-    analysis = analyze_resume(parsed_resume)
+    analysis = await analyze_resume(parsed_resume)
 
     return JSONResponse(content={
         "status": {"httpCode": "200", "success": True, "message": "Analysis complete"},
@@ -113,7 +107,7 @@ async def analyze_and_upload(
             },
         )
 
-    analysis = analyze_resume(parsed_resume)
+    analysis = await analyze_resume(parsed_resume)
 
     drive_result = {"file_id": "", "drive_link": ""}
     try:
