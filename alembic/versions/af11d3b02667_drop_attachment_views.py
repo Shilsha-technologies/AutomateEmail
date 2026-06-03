@@ -21,8 +21,8 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Upgrade schema."""
     op.execute('DROP TABLE IF EXISTS attachment_views CASCADE')
- 
- 
+
+
 def downgrade() -> None:
     """Downgrade schema."""
     op.create_table(

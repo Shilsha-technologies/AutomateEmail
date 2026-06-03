@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from models.email_model      import Email
 from models.attachment_model import Attachment
 from models.hr_user          import HRUser
+from models.sync_job         import SyncJob
 from utils.date_utils        import parse_email_datetime
 from utils.security          import decrypt_token
 from services.extractor         import extract_email_data       
@@ -176,23 +177,36 @@ def _add_attachments(msg, attachments: list[dict] | None = None):
         msg.attach(part)
 
 
-def _list_message_refs(service, label_ids: list[str], page_token: str | None = None):
-    return service.users().messages().list(
-        userId="me",
-        maxResults=500,
-        labelIds=label_ids,
-        pageToken=page_token,
-    ).execute()
+def _list_message_refs(
+    service,
+    label_ids: list[str],
+    page_token: str | None = None,
+    days: int | None = None,
+):
+    params = {
+        "userId": "me",
+        "maxResults": 500,
+        "labelIds": label_ids,
+        "pageToken": page_token,
+    }
+    if days:
+        params["q"] = f"newer_than:{days}d"
+    return service.users().messages().list(**params).execute()
 
 
-def _iter_message_refs(service):
+def _iter_message_refs(service, days: int | None = None):
     """
     Fetch only inbox and spam messages so sent mail is excluded from sync.
     """
     for label_ids in (["INBOX"], ["SPAM"]):
         page_token = None
         while True:
-            results = _list_message_refs(service, label_ids=label_ids, page_token=page_token)
+            results = _list_message_refs(
+                service,
+                label_ids=label_ids,
+                page_token=page_token,
+                days=days,
+            )
             for msg_ref in results.get("messages", []):
                 yield msg_ref
             page_token = results.get("nextPageToken")
@@ -202,12 +216,26 @@ def _iter_message_refs(service):
 
 
 # -- Fetch & Store Emails --------------------------------------
-def fetch_and_store_emails(hr_user: HRUser, db: Session) -> int:
+def _update_sync_job_progress(db: Session, sync_job_id: int | None, count: int) -> None:
+    if not sync_job_id:
+        return
+    db.query(SyncJob).filter(SyncJob.id == sync_job_id).update(
+        {"synced_count": count},
+        synchronize_session=False,
+    )
+
+
+def fetch_and_store_emails(
+    hr_user: HRUser,
+    db: Session,
+    days: int | None = None,
+    sync_job_id: int | None = None,
+) -> int:
     service    = get_service(hr_user, db)
     count      = 0
     seen_message_ids: set[str] = set()
 
-    for msg_ref in _iter_message_refs(service):
+    for msg_ref in _iter_message_refs(service, days=days):
         msg_id = msg_ref.get("id", "")
         if not msg_id or msg_id in seen_message_ids:
             continue
@@ -253,6 +281,7 @@ def fetch_and_store_emails(hr_user: HRUser, db: Session) -> int:
             hr_user_id=hr_user.id,
             email_id=msg_id,
             provider="gmail",
+            sync_job_id=sync_job_id,
             candidate_name=final_name,
             candidate_email=candidate_email,
             subject=subject,
@@ -288,5 +317,7 @@ def fetch_and_store_emails(hr_user: HRUser, db: Session) -> int:
 
         db.commit()
         count += 1
+        _update_sync_job_progress(db, sync_job_id, count)
+        db.commit()
 
     return count

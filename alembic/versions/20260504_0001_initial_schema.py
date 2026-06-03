@@ -205,8 +205,8 @@ def upgrade() -> None:
     op.create_index(op.f("ix_attachment_activity_attachment_id"), "attachment_activity", ["attachment_id"], unique=False)
     op.create_index(op.f("ix_attachment_activity_hr_user_id"), "attachment_activity", ["hr_user_id"], unique=False)
     op.create_index(op.f("ix_attachment_activity_id"), "attachment_activity", ["id"], unique=False)
- 
- 
+
+
 def downgrade() -> None:
     op.drop_index(op.f("ix_attachment_activity_id"), table_name="attachment_activity")
     op.drop_index(op.f("ix_attachment_activity_hr_user_id"), table_name="attachment_activity")

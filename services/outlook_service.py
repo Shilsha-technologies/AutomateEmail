@@ -1,5 +1,6 @@
 # services/outlook_service.py
 import os, json, requests, base64, re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from msal import PublicClientApplication, SerializableTokenCache
 from bs4 import BeautifulSoup
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 from models.email_model      import Email
 from models.attachment_model import Attachment
 from models.hr_user          import HRUser
+from models.sync_job         import SyncJob
 from utils.date_utils        import parse_email_datetime
 from utils.security          import encrypt_token, decrypt_token
 from services.extractor         import extract_email_data        # ← added
@@ -22,7 +24,7 @@ SCOPES         = ["https://graph.microsoft.com/Mail.Read",
                   "https://graph.microsoft.com/Mail.Send"]
 ATTACHMENT_DIR = "attachments/outlook"
 
-
+ 
 class OutlookSendError(Exception):
     def __init__(self, message: str):
         super().__init__(message)
@@ -214,30 +216,53 @@ def _build_graph_attachments(attachments: list[dict] | None = None) -> list[dict
 
 
 
-def _fetch_folder_messages(token: str, folder_name: str, skip: int) -> list[dict]:
+def _fetch_folder_messages(
+    token: str,
+    folder_name: str,
+    skip: int,
+    since: datetime | None = None,
+) -> list[dict]:
     headers = {"Authorization": f"Bearer {token}"}
-    url = (
-        f"https://graph.microsoft.com/v1.0/me/mailFolders/{folder_name}/messages"
-        f"?$top=50"
-        f"&$skip={skip}"
-        f"&$orderby=receivedDateTime desc"
-        f"&$select=subject,from,receivedDateTime,body,hasAttachments,id"
-    )
-    response = requests.get(url, headers=headers)
+    url = f"https://graph.microsoft.com/v1.0/me/mailFolders/{folder_name}/messages"
+    params = {
+        "$top": "50",
+        "$skip": str(skip),
+        "$orderby": "receivedDateTime desc",
+        "$select": "subject,from,receivedDateTime,body,hasAttachments,id",
+    }
+    if since:
+        params["$filter"] = f"receivedDateTime ge {since.isoformat().replace('+00:00', 'Z')}"
+
+    response = requests.get(url, headers=headers, params=params)
     if response.status_code != 200:
         raise Exception(f"Failed to fetch {folder_name}: {response.text}")
     return response.json().get("value", [])
 
 # ── Fetch & Store Emails ──────────────────────────────────────
-def fetch_and_store_emails(hr_user: HRUser, db: Session):
+def _update_sync_job_progress(db: Session, sync_job_id: int | None, count: int) -> None:
+    if not sync_job_id:
+        return
+    db.query(SyncJob).filter(SyncJob.id == sync_job_id).update(
+        {"synced_count": count},
+        synchronize_session=False,
+    )
+
+
+def fetch_and_store_emails(
+    hr_user: HRUser,
+    db: Session,
+    days: int | None = None,
+    sync_job_id: int | None = None,
+):
     token = get_access_token(hr_user, db)
     new_count = 0
     seen_message_ids: set[str] = set()
+    since = datetime.now(timezone.utc) - timedelta(days=days) if days else None
 
     for folder_name in ("inbox", "junkemail"):
         skip = 0
         while True:
-            emails = _fetch_folder_messages(token, folder_name, skip)
+            emails = _fetch_folder_messages(token, folder_name, skip, since=since)
             if not emails:
                 break
 
@@ -280,6 +305,7 @@ def fetch_and_store_emails(hr_user: HRUser, db: Session):
                     hr_user_id=hr_user.id,
                     email_id=msg_id,
                     provider="outlook",
+                    sync_job_id=sync_job_id,
                     candidate_name=candidate_name or extracted["candidate_name"],
                     candidate_email=candidate_email,
                     subject=subject,
@@ -316,6 +342,8 @@ def fetch_and_store_emails(hr_user: HRUser, db: Session):
                     email_record.has_attachments = True
                 db.commit()
                 new_count += 1
+                _update_sync_job_progress(db, sync_job_id, new_count)
+                db.commit()
 
             skip += 50
             if len(emails) < 50:
