@@ -1,10 +1,13 @@
 import os
 import io
 
+from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
+
+load_dotenv(override=True)
 
 SCOPES           = ["https://www.googleapis.com/auth/drive"]
 OAUTH_TOKEN_FILE = os.getenv("GOOGLE_OAUTH_TOKEN", "token.json")
@@ -49,9 +52,16 @@ def ensure_folder_path(folder_path: str) -> str:
     root_folder_id = os.getenv("DRIVE_ROOT_FOLDER_ID")
     parts          = [p for p in folder_path.strip("/").split("/") if p]
 
+    print(
+        f"[DRIVE DEBUG] DRIVE_ROOT_FOLDER_ID={root_folder_id} "
+        f"folder_path={folder_path} parts={parts}"
+    )
+
     if root_folder_id:
-        parent_id     = root_folder_id
-        parts_to_walk = parts[1:]  
+        parent_id = root_folder_id
+        parts_to_walk = parts
+        if parts and parts[0].lower() == "candidates":
+            parts_to_walk = parts[1:]
     else:
         parent_id     = None
         parts_to_walk = parts

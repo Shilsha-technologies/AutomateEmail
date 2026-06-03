@@ -14,6 +14,12 @@ import logging
 log = logging.getLogger(__name__) 
 
 SUPPORTED_TYPES = ["pdf", "docx", "xlsx"]
+
+
+def _sanitize_text(text: str) -> str:
+    if text is None:
+        return ""
+    return text.replace("\x00", "").strip()
 RESUME_EXTENSIONS = {"pdf", "docx", "xlsx"}
 
 NON_RESUME_PATTERN = re.compile(
@@ -233,7 +239,7 @@ def read_pdf(file_path):
                 if page_text.strip():
                     text += f"\n--- Page {page_number + 1} (OCR) ---\n"
                     text += page_text + "\n"
-        return text.strip()
+        return _sanitize_text(text)
     except Exception as e:
         print(f"Error reading PDF {file_path}: {e}")
         return ""
@@ -252,7 +258,7 @@ def read_word(file_path):
                 row_text = " | ".join(cell.text.strip() for cell in row.cells)
                 if row_text.strip():
                     text += row_text + "\n"
-        return text.strip()
+        return _sanitize_text(text)
     except Exception as e:
         print(f"Error reading Word file {file_path}: {e}")
         return ""
@@ -270,7 +276,7 @@ def read_excel(file_path):
             df = df.dropna(axis=1, how="all")
             text += df.to_string(index=False)
             text += "\n"
-        return text.strip()
+        return _sanitize_text(text)
     except Exception as e:
         print(f"Error reading Excel file {file_path}: {e}")
         return ""

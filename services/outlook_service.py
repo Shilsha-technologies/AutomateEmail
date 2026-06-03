@@ -283,8 +283,10 @@ def fetch_and_store_emails(
                 candidate_name, candidate_email = _extract_name_email(
                     email_data.get("from", {})
                 )
-                subject = email_data.get("subject", "")
-                body = _get_body(email_data)
+                subject = email_data.get("subject", "") or ""
+                body = _get_body(email_data) or ""
+                subject = subject.replace("\x00", "")
+                body = body.replace("\x00", "")
                 date = email_data.get("receivedDateTime", "")
 
                 att_list = _save_attachment(token, msg_id)

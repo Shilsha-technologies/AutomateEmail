@@ -81,13 +81,10 @@ def _call_groq(chain_input: dict) -> dict:
 
     content = response.choices[0].message.content.strip()
 
-    # Strip markdown fences if present
     content = re.sub(r'^```json\s*', '', content)
     content = re.sub(r'\s*```$',     '', content)
 
     return json.loads(content)
-# ──────────────────────────────────────────────────────────────
-
 
 _SYSTEM_PROMPT = """You are an expert ATS resume evaluation system and senior technical recruiter.
 

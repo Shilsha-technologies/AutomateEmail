@@ -10,7 +10,7 @@ from routers.template_router import router as template_router
 from routers.signature_router import router as signature_router
 from resume_analyzer.router import router as resume_analyzer_router
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 app = FastAPI(
     title       = "Email Parser API",
@@ -22,7 +22,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     #allow_origins     = ["*"],
-    allow_origins     = ["*","http://localhost:3000"],
+    allow_origins     = ["*","http://localhost:4000"],
     allow_credentials = True,
     allow_methods     = ["*"],
     allow_headers     = ["*"],

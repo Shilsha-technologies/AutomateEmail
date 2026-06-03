@@ -23,6 +23,10 @@ async def run_resume_analyzer(
             db             = db,
             candidate_name = candidate.name or "Candidate",
         )
+        
+        if not analysis or not analysis.get("domain"):
+            print(f"[ANALYZER ERROR] Empty or incomplete analysis for {filename}: {analysis}")
+            return
 
         drive_result = {"file_id": "", "drive_link": ""}
         if file_path and os.path.exists(file_path):
@@ -74,6 +78,9 @@ async def run_resume_analyzer(
         )
 
     except Exception as e:
+        import traceback
+        print(f"[ANALYZER FATAL] {filename}: {e}")
+        traceback.print_exc()
         try:
             db.rollback()
         except Exception:
