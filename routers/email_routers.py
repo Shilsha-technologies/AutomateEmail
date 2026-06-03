@@ -398,7 +398,6 @@ def get_all_emails_with_details(
     subject: Optional[str] = Query(default=None,
                                    description="Search by subject"),
     get_all:            bool          = Query(default=False),
-    sync_job_id: int | None = Query(default=None),
     is_job_application: Optional[bool]= Query(default=None),
     date_from: Optional[str] = Query(
         default=None,
@@ -425,9 +424,6 @@ def get_all_emails_with_details(
         )
 
     query = get_scoped_email_query(db, current_user, provider_value)
-
-    if sync_job_id is not None:
-        query = query.filter(Email.sync_job_id == sync_job_id)
 
     if subject:
         query = query.filter(Email.subject.ilike(f"%{subject}%"))
@@ -509,11 +505,7 @@ def get_all_emails_with_details(
 
     total = query.count()
 
-    ordering = (
-        Email.received_at.is_(None),
-        Email.received_at.desc(),
-        Email.id.desc(),
-    )
+    ordering = get_email_ordering()
 
     if get_all:
         emails    = query.order_by(*ordering).all()
@@ -597,6 +589,218 @@ def get_all_emails_with_details(
             "date_to":            date_to,
             "has_attachments":    has_attachments,
             "subject":            subject,
+        },
+        "emails": result
+    }
+
+
+@router.get("/{provider}/emails/latest-sync-details")
+def get_latest_synced_emails_with_details(
+    provider:           ProviderParam,
+    sync_job_id:        int           = Query(..., description="Sync job ID returned by the sync API"),
+    page:               int           = Query(default=1, ge=1),
+    page_size:          int           = Query(default=100, le=1000),
+    search: Optional[str] = Query(
+    default=None,
+    description="Search by candidate name and E-mail"),
+    subject: Optional[str] = Query(default=None,
+                                   description="Search by subject"),
+    get_all:            bool          = Query(default=False),
+    is_job_application: Optional[bool]= Query(default=None),
+    date_from: Optional[str] = Query(
+        default=None,
+        description="Format: DD/MM/YYYY"
+    ),
+    date_to: Optional[str] = Query(
+        default=None,
+        description="Format: DD/MM/YYYY "
+    ),
+    job_category: Optional[str] = Query(
+        default=None,
+        description="Filter by job category (e.g. python, java, django, react, flutter)"
+    ),  
+    has_attachments:    Optional[bool]= Query(default=None),
+    db:                 Session       = Depends(get_db),
+    current_user:       HRUser        = Depends(get_employee_mailbox)
+):
+    provider_value = provider.value
+    svc = get_provider_svc(provider_value)
+    if not svc.is_authenticated(current_user):
+        raise HTTPException(
+            status_code=401,
+            detail=f"{provider_value.capitalize()} not connected.",
+        )
+
+    query = get_scoped_email_query(db, current_user, provider_value)
+    query = query.filter(Email.sync_job_id == sync_job_id)
+
+    if subject:
+        query = query.filter(Email.subject.ilike(f"%{subject}%"))
+
+    if search:
+        query = query.filter(
+            or_(
+                Email.candidate_name.ilike(f"%{search}%"),
+                Email.candidate_email.ilike(f"%{search}%"),
+                Email.subject.ilike(f"%{search}%")
+            )
+        )
+
+    if is_job_application is not None:
+        query = query.filter(Email.is_job_application == is_job_application)
+
+    if job_category is not None:
+        category_key = get_category_from_position(job_category)
+
+        all_positions = (
+            db.query(Email.job_position)
+            .filter(
+                Email.provider == provider_value,
+                Email.hr_user_id == current_user.id,
+                Email.sync_job_id == sync_job_id,
+                Email.job_position.isnot(None),
+                Email.job_position != ""
+            )
+            .distinct()
+            .all()
+        )
+        matched_positions = [
+            row.job_position
+            for row in all_positions
+            if get_category_from_position(row.job_position) == category_key
+        ]
+
+        if not matched_positions:
+            return {
+                "provider":  provider_value,
+                "sync_job_id": sync_job_id,
+                "total":     0,
+                "page":      page,
+                "page_size": page_size,
+                "filters_applied": {
+                    "search":             search,
+                    "is_job_application": is_job_application,
+                    "job_category":       job_category,
+                    "date_from":          date_from,
+                    "date_to":            date_to,
+                    "has_attachments":    has_attachments,
+                    "subject":            subject,
+                    "sync_job_id":        sync_job_id,
+                },
+                "emails": []
+            }
+
+        query = query.filter(Email.job_position.in_(matched_positions))
+
+    if date_from:
+        try:
+            date_from_dt = datetime.strptime(date_from, "%d/%m/%Y")
+            query = query.filter(Email.received_at >= date_from_dt)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid date_from format. Use DD/MM/YYYY"
+            )
+
+    if date_to:
+        try:
+            date_to_dt = datetime.strptime(date_to, "%d/%m/%Y") + timedelta(days=1)
+            query = query.filter(Email.received_at < date_to_dt)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid date_to format. Use DD/MM/YYYY"
+            )
+    if has_attachments is not None:
+        query = query.filter(Email.has_attachments == has_attachments)
+
+    total = query.count()
+    ordering = get_email_ordering()
+
+    if get_all:
+        emails    = query.order_by(*ordering).all()
+        page      = 1
+        page_size = total
+    else:
+        emails = query.order_by(*ordering) \
+                      .offset((page - 1) * page_size) \
+                      .limit(page_size).all()
+
+    email_ids = [email.id for email in emails]
+    attachments = []
+    if email_ids:
+        attachments = db.query(Attachment).filter(Attachment.email_id.in_(email_ids)).all()
+
+    attachments_by_email = {}
+    for att in attachments:
+        attachments_by_email.setdefault(att.email_id, []).append(att)
+
+    attachment_ids = [att.id for att in attachments]
+    user_view_map, view_count_map, user_download_map, download_count_map = load_attachment_activity_metadata(
+        db,
+        attachment_ids,
+        current_user.id,
+    )
+    outreach_summary_map = build_outreach_summary_map(db, email_ids, current_user.id)
+
+    result = []
+    for email in emails:
+        atts = attachments_by_email.get(email.id, [])
+        formatted = format_email_datetime(email.received_at, email.date)
+        outreach_summary = outreach_summary_map.get(
+            email.id,
+            {
+                "outreach_status": "not_sent",
+                "outreach_count": 0,
+                "sent_outreach_count": 0,
+                "failed_outreach_count": 0,
+                "last_outreach_at": None,
+                "last_outreach_batch_id": None,
+                "last_outreach_log_id": None,
+            },
+        )
+        result.append(
+            {
+                "id":              email.id,
+                "email_id":        email.email_id,
+                "provider":        email.provider,
+                "sync_job_id":     email.sync_job_id,
+                "candidate_name":  email.candidate_name,
+                "candidate_email": email.candidate_email,
+                "subject":         email.subject,
+                "date":            formatted["date"],
+                "time":            formatted["time"],
+                "job_position":    email.job_position,
+                "has_attachments": email.has_attachments,
+                **outreach_summary,
+                "attachments": [
+                    build_attachment_payload(
+                        a,
+                        user_view_map,
+                        view_count_map,
+                        user_download_map,
+                        download_count_map,
+                    )
+                    for a in atts
+                ],
+            }
+        )
+
+    return {
+        "provider":  provider_value,
+        "sync_job_id": sync_job_id,
+        "total":     total,
+        "page":      page,
+        "page_size": page_size,
+        "filters_applied": {
+            "search":             search,
+            "is_job_application": is_job_application,
+            "job_category":       job_category,
+            "date_from":          date_from,
+            "date_to":            date_to,
+            "has_attachments":    has_attachments,
+            "subject":            subject,
+            "sync_job_id":        sync_job_id,
         },
         "emails": result
     }
