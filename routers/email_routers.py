@@ -509,12 +509,18 @@ def get_all_emails_with_details(
 
     total = query.count()
 
+    ordering = (
+        Email.received_at.is_(None),
+        Email.received_at.desc(),
+        Email.id.desc(),
+    )
+
     if get_all:
-        emails    = query.order_by(Email.id.desc()).all()
+        emails    = query.order_by(*ordering).all()
         page      = 1
         page_size = total
     else:
-        emails = query.order_by(Email.id.desc()) \
+        emails = query.order_by(*ordering) \
                       .offset((page - 1) * page_size) \
                       .limit(page_size).all()
 
