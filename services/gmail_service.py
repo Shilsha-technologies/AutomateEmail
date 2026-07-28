@@ -104,18 +104,19 @@ def _save_attachment(service, msg_id, part):
     data = base64.urlsafe_b64decode(att["data"])
 
     os.makedirs(ATTACHMENT_DIR, exist_ok=True)
-    save_path = os.path.join(ATTACHMENT_DIR, filename)
+    safe_msg_id = re.sub(r'[^A-Za-z0-9_-]', '_', msg_id)[:40]
+    unique_filename = f"{safe_msg_id}__{filename}"
+    save_path = os.path.join(ATTACHMENT_DIR, unique_filename)
     with open(save_path, "wb") as f:
         f.write(data)
 
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "unknown"
     return {
-        "filename":  filename,
-        "file_path": save_path,
+        "filename":  filename,      
+        "file_path": save_path,     
         "file_size": len(data),
         "file_type": ext
     }
-
 
 # Gmail Send Helper
 def send_email(

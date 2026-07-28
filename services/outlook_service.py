@@ -89,18 +89,19 @@ def _save_attachment(token, message_id):
         if "#microsoft.graph.fileAttachment" in att_type:
             content   = base64.b64decode(att.get("contentBytes", ""))
             os.makedirs(ATTACHMENT_DIR, exist_ok=True)
-            save_path = os.path.join(ATTACHMENT_DIR, filename)
+            safe_msg_id = re.sub(r'[^A-Za-z0-9_-]', '_', message_id)[:40]
+            unique_filename = f"{safe_msg_id}__{filename}"
+            save_path = os.path.join(ATTACHMENT_DIR, unique_filename)
             with open(save_path, "wb") as f:
                 f.write(content)
             ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "unknown"
             attachments.append({
-                "filename":  filename,
-                "file_path": save_path,
+                "filename":  filename,       
+                "file_path": save_path,     
                 "file_size": len(content),
                 "file_type": ext
             })
     return attachments
-
 
 # Outlook Send Helper
 
@@ -322,14 +323,9 @@ def fetch_and_store_emails(
                 for att_data in att_list:
                     if not _is_resume_file(att_data["file_path"]):
                         print(f"[SKIP DB] Not saving junk attachment: {att_data['filename']}")
-                        continue                                            #added this 
-                    att_info = process_attachment(att_data["file_path"])
-                    existing = db.query(Attachment).filter_by(file_path=att_data["file_path"]).first()
-                    if existing:
-                        print(f"[SKIP DUPLICATE] {att_data['filename']} already exists")
-                        email_record.has_attachments = True
                         continue
-                    db.add(Attachment(
+                    att_info = process_attachment(att_data["file_path"])                                #added this 
+                    db.add(Attachment(        
                         email_id   = email_record.id,
                         filename   = att_data["filename"],
                         file_path  = att_data["file_path"],
