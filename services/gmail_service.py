@@ -125,7 +125,20 @@ def send_email(
         bcc_emails : list[str] | None = None,
         is_html: bool = False,
         attachments: list[dict] | None = None,
+        thread_id: str | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
 ):
+    """
+    thread_id:   Gmail threadId of the candidate's original message. When
+                 provided, the sent message is attached to that thread
+                 instead of starting a new one.
+    in_reply_to: RFC 5322 Message-ID header of the message being replied to.
+                 Required (together with thread_id) for Gmail to render the
+                 message as part of the same conversation.
+    references:  Optional References header value. Defaults to in_reply_to
+                 when not supplied.
+    """
     service = get_service(hr_user, db)
     msg = MIMEMultipart()
     if bcc_emails:
@@ -137,6 +150,10 @@ def send_email(
 
     msg["subject"] = subject
 
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+        msg["References"] = references or in_reply_to
+
     subtype = "html" if is_html else "plain"
     normalized_body = body if is_html else _normalize_plain_text_body(body)
     msg.attach(MIMEText(normalized_body, subtype, "utf-8"))
@@ -144,9 +161,13 @@ def send_email(
 
     raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
 
+    send_body = {"raw": raw_message}
+    if thread_id:
+        send_body["threadId"] = thread_id
+
     return service.users().messages().send(
         userId="me",
-        body={"raw": raw_message}
+        body=send_body
     ).execute()
 
 
@@ -260,6 +281,8 @@ def fetch_and_store_emails(
         subject                         = _decode_str(headers.get("Subject", ""))
         body                            = _get_body(msg["payload"])
         date                            = headers.get("Date", "")
+        thread_id                       = msg.get("threadId")
+        message_id_header               = headers.get("Message-ID") or headers.get("Message-Id")
 
         att_names = []
         parts = msg["payload"].get("parts", [])
@@ -292,6 +315,8 @@ def fetch_and_store_emails(
             has_attachments=False,
             is_job_application=extracted["is_job_application"],
             job_position=extracted["job_position"],
+            thread_id=thread_id,
+            message_id_header=message_id_header,
         )
         db.add(email_record)
         db.flush()

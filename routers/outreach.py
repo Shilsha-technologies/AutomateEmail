@@ -67,6 +67,7 @@ def _run_outreach_send(
             recipient_targets=recipient_targets,
             is_html=payload.is_html,
             attachments=attachments,
+            is_reply=payload.is_reply,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -103,6 +104,7 @@ async def send_outreach(
     date_from: str | None = Form(default=None),
     date_to: str | None = Form(default=None),
     is_html: bool = Form(default=False),
+    is_reply: bool = Form(default=False),
     hr_user_id: int | None = Form(default=None),
     attachments: list[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
@@ -130,6 +132,7 @@ async def send_outreach(
             candidate_ids=candidate_ids,
             filters=filters,
             is_html=is_html,
+            is_reply=is_reply,
         )
 
         attachment_payloads: list[dict] = []

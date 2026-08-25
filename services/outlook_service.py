@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 CLIENT_ID      = os.getenv("OUTLOOK_CLIENT_ID")
 TENANT_ID      = "common"
-SCOPES         = ["https://graph.microsoft.com/Mail.Read",
+SCOPES         = ["https://graph.microsoft.com/Mail.ReadWrite",
                   "https://graph.microsoft.com/Mail.ReadBasic",
                   "https://graph.microsoft.com/Mail.Send"]
 ATTACHMENT_DIR = "attachments/outlook"
@@ -105,6 +105,26 @@ def _save_attachment(token, message_id):
 
 # Outlook Send Helper
 
+def _raise_for_graph_error(resp: requests.Response, action: str) -> None:
+    error_code = ""
+    error_message = ""
+    try:
+        error_payload = resp.json().get("error", {})
+        error_code = (error_payload.get("code") or "").strip()
+        error_message = (error_payload.get("message") or "").strip()
+    except Exception:
+        error_message = resp.text.strip()
+
+    if error_code == "ErrorAccountSuspend" or "Account suspended" in error_message:
+        raise OutlookSendError(
+            "Outlook account needs verification. Please open Outlook in the browser, complete the security prompt, and try again."
+        )
+
+    raise OutlookSendError(
+        f"Outlook {action} failed: {error_message or resp.text.strip() or 'Unknown error'}"
+    )
+
+
 def send_email(
     hr_user: HRUser,
     db: Session,
@@ -114,12 +134,32 @@ def send_email(
     bcc_emails: list[str] | None = None,
     is_html: bool = False,
     attachments: list[dict] | None = None,
+    reply_to_message_id: str | None = None,
 ):
+    """
+    reply_to_message_id: Graph message id (Email.email_id) of the candidate's
+    original message. When provided, the message is sent as a genuine Graph
+    reply so it lands inside that message's conversation instead of starting
+    a new one.
+    """
     token = get_access_token(hr_user, db)
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
+
+    if reply_to_message_id:
+        return _send_reply(
+            token=token,
+            headers=headers,
+            reply_to_message_id=reply_to_message_id,
+            subject=subject,
+            body=body,
+            to_email=to_email,
+            bcc_emails=bcc_emails,
+            is_html=is_html,
+            attachments=attachments,
+        )
 
     message = {
         "subject": subject,
@@ -168,25 +208,123 @@ def send_email(
         ) from exc
 
     if resp.status_code not in (202, 200):
-        error_code = ""
-        error_message = ""
-        try:
-            error_payload = resp.json().get("error", {})
-            error_code = (error_payload.get("code") or "").strip()
-            error_message = (error_payload.get("message") or "").strip()
-        except Exception:
-            error_message = resp.text.strip()
-
-        if error_code == "ErrorAccountSuspend" or "Account suspended" in error_message:
-            raise OutlookSendError(
-                "Outlook account needs verification. Please open Outlook in the browser, complete the security prompt, and try again."
-            )
-
-        raise OutlookSendError(
-            f"Outlook send failed: {error_message or resp.text.strip() or 'Unknown error'}"
-        )
+        _raise_for_graph_error(resp, "send")
 
     return {"status": "sent"}
+
+
+def _send_reply(
+    token: str,
+    headers: dict,
+    reply_to_message_id: str,
+    subject: str,
+    body: str,
+    to_email: str,
+    bcc_emails: list[str] | None,
+    is_html: bool,
+    attachments: list[dict] | None,
+):
+    """
+    Sends `body` as a real reply to `reply_to_message_id` using Graph's
+    createReply -> update draft -> send flow. This keeps the message inside
+    the candidate's original conversation (Graph sets conversationId,
+    In-Reply-To/References, and the "RE:" subject automatically), while
+    still letting us control the recipient, custom subject, body, and
+    attachments.
+    """
+    try:
+        create_resp = requests.post(
+            f"https://graph.microsoft.com/v1.0/me/messages/{reply_to_message_id}/createReply",
+            headers=headers,
+            json={},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise OutlookSendError(
+            "Unable to reach Outlook right now. Please try again."
+        ) from exc
+
+    if create_resp.status_code not in (200, 201):
+        _raise_for_graph_error(create_resp, "reply creation")
+
+    draft = create_resp.json()
+    draft_id = draft.get("id")
+    if not draft_id:
+        raise OutlookSendError("Outlook reply creation failed: no draft id returned.")
+
+    update_payload = {
+        "subject": subject,
+        "body": {
+            "contentType": "HTML" if is_html else "Text",
+            "content": body,
+        },
+        "toRecipients": [
+            {
+                "emailAddress": {
+                    "address": to_email,
+                    "name": to_email,
+                }
+            }
+        ],
+    }
+    if bcc_emails:
+        update_payload["bccRecipients"] = [
+            {
+                "emailAddress": {
+                    "address": email,
+                    "name": email,
+                }
+            }
+            for email in sorted(set(bcc_emails))
+        ]
+
+    try:
+        update_resp = requests.patch(
+            f"https://graph.microsoft.com/v1.0/me/messages/{draft_id}",
+            headers=headers,
+            json=update_payload,
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise OutlookSendError(
+            "Unable to reach Outlook right now. Please try again."
+        ) from exc
+
+    if update_resp.status_code not in (200, 201):
+        _raise_for_graph_error(update_resp, "reply update")
+
+    graph_attachments = _build_graph_attachments(attachments)
+    for attachment in graph_attachments:
+        try:
+            att_resp = requests.post(
+                f"https://graph.microsoft.com/v1.0/me/messages/{draft_id}/attachments",
+                headers=headers,
+                json=attachment,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise OutlookSendError(
+                "Unable to reach Outlook right now. Please try again."
+            ) from exc
+
+        if att_resp.status_code not in (200, 201):
+            _raise_for_graph_error(att_resp, "reply attachment upload")
+
+    try:
+        send_resp = requests.post(
+            f"https://graph.microsoft.com/v1.0/me/messages/{draft_id}/send",
+            headers=headers,
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise OutlookSendError(
+            "Unable to reach Outlook right now. Please try again."
+        ) from exc
+
+    if send_resp.status_code not in (200, 202, 204):
+        _raise_for_graph_error(send_resp, "reply send")
+
+    return {"status": "sent", "id": draft_id}
 def _build_graph_attachments(attachments: list[dict] | None = None) -> list[dict]:
     if not attachments:
         return []
@@ -229,7 +367,7 @@ def _fetch_folder_messages(
         "$top": "50",
         "$skip": str(skip),
         "$orderby": "receivedDateTime desc",
-        "$select": "subject,from,receivedDateTime,body,hasAttachments,id",
+        "$select": "subject,from,receivedDateTime,body,hasAttachments,id,conversationId",
     }
     if since:
         params["$filter"] = f"receivedDateTime ge {since.isoformat().replace('+00:00', 'Z')}"
@@ -289,6 +427,7 @@ def fetch_and_store_emails(
                 subject = subject.replace("\x00", "")
                 body = body.replace("\x00", "")
                 date = email_data.get("receivedDateTime", "")
+                thread_id = email_data.get("conversationId")
 
                 att_list = _save_attachment(token, msg_id)
                 att_names = [a["filename"] for a in att_list]
@@ -316,6 +455,7 @@ def fetch_and_store_emails(
                     has_attachments=False,
                     is_job_application=extracted["is_job_application"],
                     job_position=extracted["job_position"],
+                    thread_id=thread_id,
                 )
                 db.add(email_record)
                 db.flush()

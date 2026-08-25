@@ -19,6 +19,7 @@ if not database_url:
 config.set_main_option("sqlalchemy.url", database_url)
 
 from database.db import Base
+from models.attachment_model import Attachment
 from models.attachment_activity import AttachmentActivity
 from models.candidate import Candidate
 from models.email_model import Email

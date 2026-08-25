@@ -104,6 +104,11 @@ class OutreachSendRequest(BaseModel):
     candidate_ids: List[int] = Field(default_factory=list)
     filters: Optional[OutreachFilters] = None
     is_html: bool = False
+    # When True, send this outreach as a reply inside the candidate's
+    # existing email thread instead of starting a new conversation. If the
+    # source email has no thread metadata (e.g. synced before this feature
+    # existed), delivery silently falls back to sending a new email.
+    is_reply: bool = False
 
 class OutreachRecipient(BaseModel):
     candidate_id: int
@@ -117,6 +122,10 @@ class OutreachSendResult(BaseModel):
     status: str
     error: Optional[str] = None
     outreach_log_id: Optional[int] = None
+    # True if this message was actually sent as a threaded reply. False when
+    # is_reply was requested but this recipient's source email had no
+    # thread metadata, so it went out as a new email instead.
+    threaded: bool = False
 
 class OutreachSendResponse(BaseModel):
     batch_id: str
@@ -143,6 +152,8 @@ class OutreachHistoryItem(BaseModel):
     status: str
     error_message: Optional[str] = None
     provider_message_id: Optional[str] = None
+    is_reply: bool = False
+    threaded: bool = False
     attempted_at: Optional[datetime] = None
     sent_at: Optional[datetime] = None
     created_at: Optional[datetime] = None

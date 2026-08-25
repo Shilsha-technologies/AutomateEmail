@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Boolean, Column, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.sql import func
 
 from database.db import Base
@@ -23,6 +23,14 @@ class OutreachLog(Base):
     status = Column(String, nullable=False, index=True)
     error_message = Column(Text, nullable=True)
     provider_message_id = Column(String, nullable=True)
+
+    # Whether this attempt was requested as a threaded reply, and whether it
+    # actually went out inside the candidate's original thread. `is_reply`
+    # reflects the caller's intent; `threaded` reflects the real outcome
+    # (False if we had to silently fall back to a new email because the
+    # source message had no thread metadata).
+    is_reply = Column(Boolean, nullable=False, server_default="false")
+    threaded = Column(Boolean, nullable=False, server_default="false")
 
     attempted_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     sent_at = Column(DateTime(timezone=True), nullable=True)

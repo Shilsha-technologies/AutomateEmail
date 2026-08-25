@@ -32,7 +32,7 @@ CREDENTIALS_FILE  = 'credentials.json'
 OUTLOOK_CLIENT_ID = os.getenv("OUTLOOK_CLIENT_ID")
 OUTLOOK_TENANT    = "common"
 OUTLOOK_SCOPES = [
-    "https://graph.microsoft.com/Mail.Read",
+    "https://graph.microsoft.com/Mail.ReadWrite",
     "https://graph.microsoft.com/Mail.ReadBasic",
     "https://graph.microsoft.com/Mail.Send",
     "User.Read",
@@ -311,5 +311,3 @@ def logout(
         "message": f"{current_employee.get('name')} logged out successfully",
         "employee_id": int(current_employee.get("employee_id") or 0),
     }
-
-

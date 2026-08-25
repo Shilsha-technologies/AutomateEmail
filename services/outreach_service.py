@@ -135,6 +135,11 @@ def _build_personalization_context(db: Session, email_row: Email) -> dict:
         "recipient_email": _normalize_email(email_row.candidate_email),
         "candidate_name": candidate_name,
         "job_role": job_role,
+        # Threading metadata needed to send this as a reply within the
+        # candidate's original conversation. See models/email_model.py.
+        "provider_email_id": email_row.email_id,
+        "thread_id": email_row.thread_id,
+        "message_id_header": email_row.message_id_header,
     }
 
 
@@ -227,6 +232,40 @@ def resolve_recipient_emails(
     return [target["recipient_email"] for target in targets]
 
 
+def _reply_subject(subject: str) -> str:
+    """Prefix a subject with 'Re: ' for reply sends, unless already present."""
+    if re.match(r"^\s*re\s*:", subject, flags=re.IGNORECASE):
+        return subject
+    return f"Re: {subject}" if subject else "Re:"
+
+
+def _reply_kwargs(hr_user: HRUser, target: dict) -> tuple[dict, bool]:
+    """
+    Build the provider-specific kwargs needed to send `target` as a threaded
+    reply. Returns (kwargs, can_thread). can_thread is False when the
+    source email is missing the metadata needed to reply in-thread (e.g. it
+    was synced before this feature existed), in which case the caller
+    should fall back to sending a normal new email.
+    """
+    if hr_user.provider == "gmail":
+        thread_id = target.get("thread_id")
+        message_id_header = target.get("message_id_header")
+        if thread_id and message_id_header:
+            return (
+                {"thread_id": thread_id, "in_reply_to": message_id_header},
+                True,
+            )
+        return {}, False
+
+    if hr_user.provider == "outlook":
+        provider_email_id = target.get("provider_email_id")
+        if provider_email_id:
+            return {"reply_to_message_id": provider_email_id}, True
+        return {}, False
+
+    return {}, False
+
+
 def deliver_outreach_message(
     db: Session,
     hr_user: HRUser,
@@ -237,6 +276,7 @@ def deliver_outreach_message(
     recipient_targets: list[dict],
     is_html: bool = False,
     attachments: list[dict] | None = None,
+    is_reply: bool = False,
 ) -> dict:
     sender_fn = _get_sender_fn(hr_user)
 
@@ -251,6 +291,21 @@ def deliver_outreach_message(
         rendered_subject = _render_template(subject, target)
         rendered_body = _render_template(body, target)
 
+        threaded = False
+        provider_kwargs: dict = {}
+        if is_reply:
+            provider_kwargs, threaded = _reply_kwargs(hr_user, target)
+            if threaded:
+                # Keep the ORIGINAL conversation's subject (not the
+                # recruiter-typed one) so the recipient's mail server groups
+                # this into the same thread. A mismatched subject breaks
+                # visual threading even when In-Reply-To/References/
+                # conversationId are set correctly, especially across
+                # organizations where the recipient's own mail system
+                # computes conversation grouping independently.
+                original_subject = target.get("subject") or rendered_subject
+                rendered_subject = _reply_subject(original_subject)
+
         try:
             provider_response = sender_fn(
                 hr_user=hr_user,
@@ -261,6 +316,7 @@ def deliver_outreach_message(
                 bcc_emails=None,
                 is_html=is_html,
                 attachments=attachments,
+                **provider_kwargs,
             )
 
             provider_message_id = None
@@ -285,6 +341,8 @@ def deliver_outreach_message(
                 error_message=None,
                 provider_message_id=provider_message_id,
                 sent_at=datetime.now(timezone.utc),
+                is_reply=is_reply,
+                threaded=threaded,
             )
             db.add(log_row)
             db.commit()
@@ -300,6 +358,7 @@ def deliver_outreach_message(
                     "status": "sent",
                     "error": None,
                     "outreach_log_id": log_row.id,
+                    "threaded": threaded,
                 }
             )
         except Exception as exc:
@@ -320,6 +379,8 @@ def deliver_outreach_message(
                 error_message=error_text,
                 provider_message_id=None,
                 sent_at=None,
+                is_reply=is_reply,
+                threaded=threaded,
             )
             db.add(log_row)
             db.commit()
@@ -335,6 +396,7 @@ def deliver_outreach_message(
                     "status": "failed",
                     "error": error_text,
                     "outreach_log_id": log_row.id,
+                    "threaded": threaded,
                 }
             )
 
